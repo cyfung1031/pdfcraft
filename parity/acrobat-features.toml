@@ -2638,8 +2638,8 @@ milestone = "M4"
 status = "shipped"
 commands = ["page.insert"]
 tools = ["page_insert_file"]
-evidence = ["crates/organize/src/tests.rs::inserting_pages_from_another_file_is_an_incremental_edit", "crates/ui-egui/tests/editing.rs::inserting_a_file_goes_after_the_selection_and_undoes"]
-notes = ""
+evidence = ["crates/organize/src/tests.rs::inserting_pages_from_another_file_is_an_incremental_edit", "crates/ui-egui/tests/editing.rs::inserting_a_file_goes_after_the_selection_and_undoes", "crates/ui-egui/tests/editing.rs::plus_between_pages_inserts_picked_files_there_in_order"]
+notes = "After the selection (toolbar, File menu) or at any gap of the page grid (a + between pages and at both ends); several files at once, in order; images and .txt files are converted first; the inserted pages end up selected. The page_insert_file tool takes PDFs only. Missing: choosing which pages of the file to insert in the app."
 
 [[feature]]
 id = "organize.insert-from-clipboard"
@@ -2683,11 +2683,11 @@ title = "Insert by dropping files onto the page grid"
 area = "D"
 tier = "P1"
 milestone = "M4"
-status = "planned"
-commands = []
+status = "partial"
+commands = ["page.organize"]
 tools = []
-evidence = []
-notes = ""
+evidence = ["crates/ui-egui/tests/editing.rs::files_dropped_between_pages_are_inserted_there", "crates/ui-egui/tests/editing.rs::files_dropped_before_the_pointer_is_known_wait_for_it", "crates/ui-egui/tests/editing.rs::files_dropped_outside_the_page_grid_still_open_as_documents"]
+notes = "Desktop: PDFs, images and .txt files dropped on the Organize page grid are inserted at the gap under the pointer, in order, and selected (elsewhere a dropped file still opens as a document). While the files hover, a bar at the gap and a + badge follow the pointer; on macOS the pointer is read from AppKit, because the windowing layer sends no moves during a file drag. Missing: on Windows and Linux there is no live position, so the grid is only outlined and the files go to the gap the pointer is at right after the drop (or the end after a second); the web build (dropped files open as documents). Covered by simulated drop events; a real drag from Finder is not in the automated tests."
 
 [[feature]]
 id = "organize.extract-pages"
@@ -6798,12 +6798,12 @@ id = "create.create-multiple"
 title = "Convert many files to PDF in one run"
 area = "J"
 tier = "P1"
-milestone = "M13"
-status = "planned"
-commands = []
-tools = []
-evidence = []
-notes = ""
+milestone = "M10"
+status = "shipped"
+commands = ["create.multiple"]
+tools = ["doc_create_multiple"]
+evidence = ["crates/engine/src/tests.rs::mixed_files_convert_and_combine_in_order", "crates/engine/src/tests.rs::files_that_cannot_be_converted_are_refused_clearly", "crates/automation/tests/automation.rs::creating_from_multiple_files_through_tools", "crates/ui-egui/tests/create.rs::multiple_files_open_as_one_document_in_the_page_grid", "crates/ui-egui/tests/editing.rs::plus_between_pages_inserts_picked_files_there_in_order", "crates/ui-egui/tests/editing.rs::save_pages_writes_what_the_grid_shows"]
+notes = "Create ▸ Multiple files: the picked PDFs, images (PNG, JPEG, JPEG 2000, TIFF, GIF, BMP) and .txt files open as one unsaved document in the page grid, in the order picked (a bookmark per file); there pages are removed, reordered, more files inserted at any gap (a + button, or dropped there), and Save pages writes what is shown. One PDF per file is offered by the doc_create_multiple tool only (mode separate), not in the app. Missing: Office, HTML and Markdown inputs, PDF Portfolio output, per-file image resolution choice, progress and cancel for large batches (conversion runs on the UI thread). The combined file has combine's limits: untagged, no page labels or document info carried over, and its per-file bookmarks are not updated when pages are later moved between files."
 
 [[feature]]
 id = "create.image-conversion-options"
