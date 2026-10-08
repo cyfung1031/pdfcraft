@@ -513,61 +513,6 @@ fn highlight_fields_tints_the_field_area() {
     assert_ne!(before, after, "the field area is tinted when highlighting is on");
 }
 
-#[test]
-fn fonts_tab_lists_fonts_and_embedding() {
-    use egui_kittest::kittest::Queryable;
-    let mut h = form_harness();
-    h.state_mut().set_option("dialog", "fonts").unwrap();
-    h.run_steps(4);
-    h.get_by_label("Helvetica");
-    h.get_by_label_contains("Not embedded");
-}
-
-#[test]
-fn the_hand_tool_pans_by_dragging() {
-    let mut h = harness(&[("layout", "continuous"), ("zoom", "150"), ("quick", "hand")]);
-    h.run_steps(4);
-    let before = rect(&h, 0).expect("page 1 on screen");
-    let start = egui::pos2(700.0, 700.0);
-    h.hover_at(start);
-    h.run_steps(1);
-    h.drag_at(start);
-    h.run_steps(1);
-    for k in 1..=5 {
-        h.hover_at(start - egui::vec2(0.0, 60.0 * k as f32));
-        h.run_steps(1);
-    }
-    h.drop_at(start - egui::vec2(0.0, 300.0));
-    h.run_steps(4);
-    let after = rect(&h, 0).expect("still on screen");
-    assert!(before.top() - after.top() > 200.0, "dragging up scrolls down: {before:?} → {after:?}");
-    assert!(h.state().views[0].selected_text().is_none(), "no text selection with the hand");
-}
-
-#[test]
-fn required_fields_get_a_red_border_when_highlighting() {
-    let _gpu = gpu();
-    let mut h = form_harness();
-    h.state_mut().set_option("panel", "none").unwrap();
-    h.state_mut().set_option("fields", "on").unwrap();
-    let props = pdfcraft_engine::FieldProps { required: Some(true), ..Default::default() };
-    h.state_mut().apply_edit(pdfcraft_engine::Edit::SetFieldProps { name: "fullname".into(), props: Box::new(props) });
-    for _ in 0..100 {
-        h.run_steps(2);
-        if !h.state().render_pending() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    let r = rect(&h, 0).expect("page 1");
-    // Just inside the left edge of the field (x 50, y 300..330 on a 300×400 page).
-    let ppp = h.ctx.pixels_per_point();
-    let at = egui::pos2(r.min.x + r.width() * (50.0 / 300.0) + 0.75, r.min.y + r.height() * (1.0 - 315.0 / 400.0));
-    let img = h.render().expect("renders");
-    let px = *img.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32);
-    assert!(px[0] > 180 && px[1] < 100 && px[2] < 100, "a red border: {px:?}");
-}
-
 /// A required radio group (`/Ff` 32768 radio + 2 required) with two 40 pt round buttons.
 const RADIOS: &[u8] = b"%PDF-1.7
 1 0 obj << /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] >> >> endobj
@@ -633,4 +578,59 @@ fn field_highlighting_is_remembered() {
     next.restore(&saved);
     next.open_bytes("form.pdf", None, FORM.to_vec()).expect("opens");
     assert!(next.views[0].highlight_fields, "and so does the next session");
+}
+
+#[test]
+fn fonts_tab_lists_fonts_and_embedding() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = form_harness();
+    h.state_mut().set_option("dialog", "fonts").unwrap();
+    h.run_steps(4);
+    h.get_by_label("Helvetica");
+    h.get_by_label_contains("Not embedded");
+}
+
+#[test]
+fn the_hand_tool_pans_by_dragging() {
+    let mut h = harness(&[("layout", "continuous"), ("zoom", "150"), ("quick", "hand")]);
+    h.run_steps(4);
+    let before = rect(&h, 0).expect("page 1 on screen");
+    let start = egui::pos2(700.0, 700.0);
+    h.hover_at(start);
+    h.run_steps(1);
+    h.drag_at(start);
+    h.run_steps(1);
+    for k in 1..=5 {
+        h.hover_at(start - egui::vec2(0.0, 60.0 * k as f32));
+        h.run_steps(1);
+    }
+    h.drop_at(start - egui::vec2(0.0, 300.0));
+    h.run_steps(4);
+    let after = rect(&h, 0).expect("still on screen");
+    assert!(before.top() - after.top() > 200.0, "dragging up scrolls down: {before:?} → {after:?}");
+    assert!(h.state().views[0].selected_text().is_none(), "no text selection with the hand");
+}
+
+#[test]
+fn required_fields_get_a_red_border_when_highlighting() {
+    let _gpu = gpu();
+    let mut h = form_harness();
+    h.state_mut().set_option("panel", "none").unwrap();
+    h.state_mut().set_option("fields", "on").unwrap();
+    let props = pdfcraft_engine::FieldProps { required: Some(true), ..Default::default() };
+    h.state_mut().apply_edit(pdfcraft_engine::Edit::SetFieldProps { name: "fullname".into(), props: Box::new(props) });
+    for _ in 0..100 {
+        h.run_steps(2);
+        if !h.state().render_pending() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let r = rect(&h, 0).expect("page 1");
+    // Just inside the left edge of the field (x 50, y 300..330 on a 300×400 page).
+    let ppp = h.ctx.pixels_per_point();
+    let at = egui::pos2(r.min.x + r.width() * (50.0 / 300.0) + 0.75, r.min.y + r.height() * (1.0 - 315.0 / 400.0));
+    let img = h.render().expect("renders");
+    let px = *img.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32);
+    assert!(px[0] > 180 && px[1] < 100 && px[2] < 100, "a red border: {px:?}");
 }
