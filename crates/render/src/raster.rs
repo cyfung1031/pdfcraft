@@ -1321,6 +1321,79 @@ trailer << /Root 1 0 R >>
         assert!(px.is_none() && text.is_none(), "{px:?} {text:?}");
     }
 
+    /// "BBBA" at 20 pt in a Type 3 font whose glyph (for both codes) is a solid 300 × 700 box,
+    /// with the given /FirstChar, /LastChar and /Widths. No font program is needed, and Type 3
+    /// widths are read like those of every other simple font.
+    fn type3_boxes(widths: &str) -> Vec<u8> {
+        let content = "BT /F1 20 Tf 20 40 Td (BBBA) Tj ET";
+        format!(
+            "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] {widths}
+  /Encoding << /Differences [65 /a /a] >> /CharProcs << /a 6 0 R >> >> endobj
+6 0 obj << /Length 27 >> stream
+600 0 d0 100 0 400 700 re f
+endstream endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+            content.len()
+        )
+        .into_bytes()
+    }
+
+    /// Simple-font widths (vendored hayro-interpret patch to `read_widths`): an entry of /Widths
+    /// that isn't a number ended the array, so every later code lost its width, and a /LastChar
+    /// below /FirstChar (or one that overflowed) made the whole font fail to load, replaced by a
+    /// standard font. MuPDF, Poppler, PDFium and pdf.js skip just that entry and keep the font.
+    #[test]
+    fn malformed_simple_font_widths_keep_later_widths_and_the_font() {
+        let render = |widths: &str| {
+            let mut r = PageRenderer::new(Arc::new(type3_boxes(widths)), RenderConfig::default());
+            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+            assert!(p.error.is_none(), "{widths}: {:?}", p.error);
+            p
+        };
+        // Glyph boxes span x 22..28 plus 12 pt per advance, and y 46..60 (y down).
+        let inked = |p: &RenderedPage, x: u32| (47..59).all(|y| p.rgba[((y * p.width + x) * 4) as usize] < 64);
+        for widths in [
+            "/FirstChar 65 /LastChar 66 /Widths [600 600]",
+            "/FirstChar 65 /LastChar 66 /Widths [null 600]",
+            "/FirstChar 65 /LastChar 66 /Widths [/W 600]",
+        ] {
+            let p = render(widths);
+            assert!([25, 37, 49, 61].iter().all(|x| inked(&p, *x)), "{widths}: each B advances 600");
+            assert!(!inked(&p, 31), "{widths}");
+        }
+        for widths in ["/FirstChar 66 /LastChar 65 /Widths [600 600]", "/FirstChar 4294967295 /LastChar 66 /Widths [600 600]"] {
+            let p = render(widths);
+            // The font's own box, drawn without advances (no width applies), not a stand-in font.
+            assert!(inked(&p, 23) && inked(&p, 27), "{widths}: the Type 3 glyph is drawn");
+            assert!(!inked(&p, 37), "{widths}: no width, no advance");
+        }
+    }
+
+    /// Simple-font widths (vendored hayro-interpret patch to `read_widths`): /FirstChar sized an
+    /// allocation, one entry per code below it, before any width was read. 50,000,000 already
+    /// took 276 MB; 4294967295 asks for 34 GB. Codes of a simple font stop at 255.
+    #[test]
+    fn huge_simple_font_first_char_terminates() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut r = PageRenderer::new(Arc::new(type3_boxes("/FirstChar 4294967295 /LastChar 4294967295 /Widths [600]")), RenderConfig::default());
+            let px = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+            let text = r.render(RenderRequest { page: 0, kind: RequestKind::Text, tile: None, scale: 1.0, tag: 0 });
+            let _ = tx.send((px, text.error));
+        });
+        let (px, text) = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("a huge /FirstChar must not exhaust memory");
+        assert!(px.error.is_none() && text.is_none(), "{:?} {text:?}", px.error);
+        assert!(px.rgba[((50 * px.width + 25) * 4) as usize] < 64, "the glyph is drawn");
+    }
+
     #[test]
     fn tiles_match_full_render() {
         let mut r = PageRenderer::new(Arc::new(ONE_PAGE.to_vec()), RenderConfig::default());
