@@ -774,6 +774,85 @@ trailer << /Root 1 0 R >>
         assert_eq!(px(30, 58), vec![255, 255, 255, 255], "above /Rect");
     }
 
+    /// A Highlight annotation without an appearance stream (common in older and generated files)
+    /// was not drawn at all. Vendored hayro-interpret patch: its /QuadPoints are filled with /C at
+    /// /CA, blended with Multiply, as PdfCraft draws its own highlights (pdfcraft-annot); MuPDF,
+    /// Poppler and PDFium draw these fixtures the same way. An /AP still wins, malformed
+    /// /QuadPoints or no /C draw nothing, and Hidden, NoView and "Hide all comments" still apply.
+    #[test]
+    fn highlights_without_an_appearance_are_drawn() {
+        let render = |annot: &str, config: RenderConfig| {
+            let content = "0 g 100 40 10 20 re f";
+            let pdf = format!(
+                "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Annots [5 0 R] >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Annot /Subtype /Highlight /Rect [15 35 120 65] {annot} >> endobj
+6 0 obj << /Type /XObject /Subtype /Form /BBox [15 35 120 65] /Length 24 >> stream
+0 0 1 rg 15 35 50 30 re f
+endstream endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+                content.len()
+            );
+            let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), config);
+            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+            assert!(p.error.is_none(), "{annot}: {:?}", p.error);
+            p
+        };
+        let px = |p: &RenderedPage, x: u32, y: u32| p.rgba[((y * p.width + x) * 4) as usize..][..4].to_vec();
+        let (white, black, yellow) = (vec![255, 255, 255, 255], vec![0, 0, 0, 255], vec![255, 255, 0, 255]);
+        let quad = "/QuadPoints [15 65 120 65 15 35 120 35]";
+
+        let p = render(&format!("{quad} /C [1 1 0]"), RenderConfig::default());
+        assert_eq!(px(&p, 30, 50), yellow, "the quad is filled with /C");
+        assert_eq!(px(&p, 105, 50), black, "Multiply keeps what is underneath");
+        assert_eq!(px(&p, 150, 50), white, "outside the quad");
+        assert_eq!(px(&p, 30, 30), white, "above the quad");
+
+        // Two quads (one per line of text); the gap between them stays white.
+        let p = render("/QuadPoints [15 65 60 65 15 50 60 50 70 50 120 50 70 35 120 35] /C [0 1 1]", RenderConfig::default());
+        assert_eq!(px(&p, 30, 40), vec![0, 255, 255, 255]);
+        assert_eq!(px(&p, 90, 60), vec![0, 255, 255, 255]);
+        assert_eq!((px(&p, 90, 40), px(&p, 30, 60)), (white.clone(), white.clone()));
+
+        // /CA and gray /C.
+        let p = render(&format!("{quad} /C [1 0 0] /CA 0.5"), RenderConfig::default());
+        let half = px(&p, 30, 50);
+        assert!(half[0] == 255 && (126..=129).contains(&half[1]) && half[1] == half[2], "{half:?}");
+        let p = render(&format!("{quad} /C [0.5]"), RenderConfig::default());
+        let gray = px(&p, 30, 50);
+        assert!((126..=129).contains(&gray[0]) && gray[0] == gray[1] && gray[1] == gray[2], "{gray:?}");
+
+        // An appearance stream wins: the blue form, not a yellow highlight.
+        let p = render(&format!("{quad} /C [1 1 0] /AP << /N 6 0 R >>"), RenderConfig::default());
+        assert_eq!(px(&p, 30, 50), vec![0, 0, 255, 255]);
+        assert_eq!(px(&p, 90, 50), white, "no highlight outside the appearance's own drawing");
+
+        // Nothing is drawn for malformed geometry, no colour, or a hidden annotation.
+        let hide = RenderConfig { hide_comments: true, ..RenderConfig::default() };
+        for (annot, config) in [
+            ("/QuadPoints [10 10 20] /C [1 1 0]", RenderConfig::default()),
+            ("/QuadPoints [15 65 120 65 15 35 /x 35] /C [1 1 0]", RenderConfig::default()),
+            ("/QuadPoints [] /C [1 1 0]", RenderConfig::default()),
+            ("/QuadPoints 7 /C [1 1 0]", RenderConfig::default()),
+            (quad, RenderConfig::default()),
+            (&format!("{quad} /C []"), RenderConfig::default()),
+            (&format!("{quad} /C [1 1]"), RenderConfig::default()),
+            (&format!("{quad} /C [1 1 0] /F 2"), RenderConfig::default()),
+            (&format!("{quad} /C [1 1 0] /F 32"), RenderConfig::default()),
+            (&format!("{quad} /C [1 1 0]"), hide),
+        ] {
+            let p = render(annot, config);
+            assert_eq!(px(&p, 30, 50), white, "{annot}");
+            assert_eq!(px(&p, 105, 50), black, "{annot}");
+        }
+    }
+
     #[test]
     fn hiding_comments_keeps_fields() {
         let pdf = b"%PDF-1.7
