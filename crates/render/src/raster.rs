@@ -774,6 +774,55 @@ trailer << /Root 1 0 R >>
         assert_eq!(px(30, 58), vec![255, 255, 255, 255], "above /Rect");
     }
 
+    /// ISO 32000-2 §12.5.5: the transformed appearance box is scaled and translated so that its
+    /// lower-left and upper-right corners land on those of /Rect. The translation ignored the
+    /// scale, so a box that doesn't start at the origin and differs in size from /Rect was drawn
+    /// shifted, partly outside /Rect (vendored hayro-interpret patch). MuPDF, Poppler, PDFium and
+    /// pdf.js fill /Rect exactly for each of these.
+    #[test]
+    fn annotation_appearance_box_maps_onto_rect() {
+        let filled = |form: &str, content: &str| {
+            let pdf = format!(
+                "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [4 0 R] >> endobj
+4 0 obj << /Type /Annot /Subtype /Square /Rect [10 10 60 40] /AP << /N 5 0 R >> >> endobj
+5 0 obj << /Type /XObject /Subtype /Form {form} /Length {} >> stream
+{content}
+endstream endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+                content.len()
+            );
+            let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+            assert!(p.error.is_none(), "{form}: {:?}", p.error);
+            // The bounding box of everything drawn, in device pixels.
+            let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+            for y in 0..p.height {
+                for x in 0..p.width {
+                    if p.rgba[((y * p.width + x) * 4) as usize..][..4] != [255, 255, 255, 255] {
+                        (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                    }
+                }
+            }
+            (x0, y0, x1, y1)
+        };
+        // /Rect [10 10 60 40] is device x 10..=59, y 60..=89.
+        let rect = (10, 60, 59, 89);
+        for (form, content) in [
+            ("/BBox [10 10 30 30]", "1 0 0 rg 10 10 20 20 re f"),
+            ("/BBox [0 0 20 20] /Matrix [1 0 0 1 10 10]", "1 0 0 rg 0 0 20 20 re f"),
+            ("/BBox [-20 -5 0 15]", "1 0 0 rg -20 -5 20 20 re f"),
+            // Unchanged: a box at the origin, and an offset box as large as /Rect.
+            ("/BBox [0 0 20 20]", "1 0 0 rg 0 0 20 20 re f"),
+            ("/BBox [100 100 150 130]", "1 0 0 rg 100 100 50 30 re f"),
+        ] {
+            assert_eq!(filled(form, content), rect, "{form}");
+        }
+    }
+
     /// A Highlight annotation without an appearance stream (common in older and generated files)
     /// was not drawn at all. Vendored hayro-interpret patch: its /QuadPoints are filled with /C at
     /// /CA, blended with Multiply, as PdfCraft draws its own highlights (pdfcraft-annot); MuPDF,

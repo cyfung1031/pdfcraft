@@ -213,13 +213,19 @@ pub fn interpret_page<'a>(
                 // corner with the greatest x and y coordinates) of the
                 // transformed appearance box to the corresponding corners
                 // of the annotation’s rectangle.
-                let affine = Affine::new([
+                // PdfCraft patch: the translation is taken after scaling (it was
+                // `/Rect.x0 - box.x0`, right only for a box at the origin or a scale of 1).
+                let (sx, sy) = (
                     annot_rect.width() / transformed_rect.width(),
-                    0.0,
-                    0.0,
                     annot_rect.height() / transformed_rect.height(),
-                    annot_rect.x0 - transformed_rect.x0,
-                    annot_rect.y0 - transformed_rect.y0,
+                );
+                let affine = Affine::new([
+                    sx,
+                    0.0,
+                    0.0,
+                    sy,
+                    annot_rect.x0 - sx * transformed_rect.x0,
+                    annot_rect.y0 - sy * transformed_rect.y0,
                 ]);
 
                 // PdfCraft patch: a /BBox or /Matrix that collapses the appearance box to a line
