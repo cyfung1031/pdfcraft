@@ -1142,7 +1142,11 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
             app.discard_recovered(&keys);
         }
     }
-    if replace_now && let Some(d) = app.replace_draft.take() {
+    // The pages to replace belong to the document the dialog was opened on (#167).
+    if replace_now
+        && let Some(d) = app.replace_draft.take()
+        && app.still_pick_target(d.target)
+    {
         let n = d.to - d.from + 1;
         app.apply_edit(Edit::ReplacePages {
             pages: (d.from - 1..d.to).collect(),
@@ -1151,8 +1155,9 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
             src_pages: (d.src_from - 1..d.src_from - 1 + n).collect(),
         });
     }
-    if print_go {
-        app.print_now();
+    // A print or save that fails keeps the dialog open, with the reason in a notice.
+    if print_go && !app.print_now() {
+        close = false;
     }
     if revert_now {
         app.revert_active();

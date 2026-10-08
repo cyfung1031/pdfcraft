@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use pdfcraft_engine::{Edit, SplitBy};
+use pdfcraft_engine::{DocId, Edit, SplitBy};
 
 use crate::PdfCraftApp;
 
@@ -28,10 +28,39 @@ pub struct ReplaceDraft {
     pub from: usize,
     pub to: usize,
     pub src_from: usize,
+    /// The document whose pages are replaced, as it was when the dialog opened: OK replaces
+    /// nothing if another document is active by then (a file opened meanwhile), or it changed.
+    pub(crate) target: Option<PickTarget>,
 }
 
-/// Files picked asynchronously (web), waiting to be used: (purpose, [(name, bytes)]).
-pub type Requests = Arc<std::sync::Mutex<Vec<(FilePurpose, Vec<(String, Vec<u8>)>)>>>;
+impl FilePurpose {
+    /// Insert and Replace edit the active document, at its selection.
+    pub(crate) fn edits_active_document(self) -> bool {
+        matches!(self, Self::InsertPages | Self::ReplacePages)
+    }
+}
+
+/// The document a pick edits, as it was when the picker opened. Page positions captured then
+/// are only valid while it is unchanged, and the pick acts on the active document; so a pick
+/// that arrives after the document was edited, or stopped being the active one, is refused
+/// (see [`PdfCraftApp::still_pick_target`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PickTarget {
+    doc: DocId,
+    generation: Option<u64>,
+}
+
+/// Files picked asynchronously in a browser, waiting for the next frame (see
+/// [`PdfCraftApp::file_request`]).
+#[derive(Debug)]
+pub struct FileRequest {
+    purpose: FilePurpose,
+    target: Option<PickTarget>,
+    files: Vec<(String, Vec<u8>)>,
+}
+
+/// Files picked asynchronously (web), waiting to be used.
+pub type Requests = Arc<std::sync::Mutex<Vec<FileRequest>>>;
 
 /// Settings for the Split dialog.
 #[derive(Clone, Debug, PartialEq)]
@@ -121,6 +150,10 @@ impl PdfCraftApp {
         #[cfg(target_arch = "wasm32")]
         {
             let requests = self.requests.clone();
+            let ctx = self.ctx.clone();
+            // The document to insert into is the one active now, not whichever is active when
+            // the browser has finished reading the file (#167).
+            let request = self.file_request(purpose, Vec::new());
             wasm_bindgen_futures::spawn_local(async move {
                 let dialog = rfd::AsyncFileDialog::new().add_filter("PDF", &["pdf"]);
                 let handles = if multiple { dialog.pick_files().await.unwrap_or_default() } else { dialog.pick_file().await.into_iter().collect() };
@@ -131,7 +164,11 @@ impl PdfCraftApp {
                 if !files.is_empty()
                     && let Ok(mut q) = requests.lock()
                 {
-                    q.push((purpose, files));
+                    q.push(FileRequest { files, ..request });
+                }
+                // The read may finish while the app is idle: wake it to use the files.
+                if let Some(ctx) = ctx {
+                    ctx.request_repaint();
                 }
             });
         }
@@ -156,11 +193,43 @@ impl PdfCraftApp {
         }
     }
 
+    /// A request to use `files` for `purpose`, bound to the document it will edit: the active
+    /// one now, for Insert and Replace. Browsers make it when the picker opens and queue it on
+    /// `requests` once the files are read; it is used on a later frame.
+    pub fn file_request(&self, purpose: FilePurpose, files: Vec<(String, Vec<u8>)>) -> FileRequest {
+        let target = if purpose.edits_active_document() { self.pick_target(self.active_ids().map(|(_, id)| id)) } else { None };
+        FileRequest { purpose, target, files }
+    }
+
+    /// `doc` as it is now, for a pick that will edit it.
+    pub(crate) fn pick_target(&self, doc: Option<DocId>) -> Option<PickTarget> {
+        doc.map(|doc| PickTarget { doc, generation: self.session.get(doc).map(|d| d.edit_generation()) })
+    }
+
+    /// Whether a pick for `target` may still be used: the document is still the active one and
+    /// unedited. Tells the user when not.
+    pub(crate) fn still_pick_target(&mut self, target: Option<PickTarget>) -> bool {
+        let Some(t) = target else { return true };
+        let active = self.active_ids().map(|(_, id)| id);
+        let generation = self.session.get(t.doc).map(|d| d.edit_generation());
+        if active == Some(t.doc) && generation == t.generation {
+            return true;
+        }
+        self.notify_tr("The document changed while you were choosing a file, so nothing was changed.");
+        false
+    }
+
     /// Handle files picked asynchronously.
     pub(crate) fn process_file_requests(&mut self) {
         let pending: Vec<_> = self.requests.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
-        for (purpose, files) in pending {
-            self.use_files(purpose, files);
+        for FileRequest { purpose, target, files } in pending {
+            if !self.still_pick_target(target) {
+                continue;
+            }
+            // Last-resort guard (AGENTS.md §4), as for desktop picks and commands.
+            if let Err(m) = pdfcraft_engine::guard(|| self.use_files(purpose, files)) {
+                self.notify_fmt("That didn't work: an internal error stopped it ({m}).", &[("m", m.as_str())]);
+            }
         }
     }
 
@@ -203,7 +272,8 @@ impl PdfCraftApp {
         };
         let targets = self.views[i].target_pages();
         let (from, to) = (targets.first().map_or(1, |p| p + 1), targets.last().map_or(1, |p| p + 1));
-        self.replace_draft = Some(ReplaceDraft { name, bytes, src_pages, from, to, src_from: 1 });
+        let target = self.pick_target(self.active_ids().map(|(_, id)| id));
+        self.replace_draft = Some(ReplaceDraft { name, bytes, src_pages, from, to, src_from: 1, target });
         self.dialog = Some(crate::Dialog::ReplacePages);
     }
 

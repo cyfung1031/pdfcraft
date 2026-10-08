@@ -342,3 +342,70 @@ fn a_watermark_file_from_browse_lands_only_in_the_dialog_that_asked() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Browsers read picked files asynchronously and queue them on `requests` (#167): the request
+/// is made when the picker opens, so it is bound to the document active then.
+fn browser_insert(h: &Harness<'static, PdfCraftApp>, pages: usize) -> pdfcraft_ui_egui::FileRequest {
+    h.state().file_request(pdfcraft_ui_egui::FilePurpose::InsertPages, vec![("b.pdf".into(), fixture(pages))])
+}
+
+#[test]
+fn a_browser_insert_goes_into_the_document_it_was_started_on() {
+    let mut h = harness(&[3, 1]);
+    h.state_mut().active = Some(0);
+    let request = browser_insert(&h, 1);
+    h.state_mut().requests.lock().unwrap().push(request);
+    h.run_steps(2);
+    assert_eq!(pages(h.state(), 0), 4);
+    assert_eq!(pages(h.state(), 1), 1);
+}
+
+#[test]
+fn a_browser_insert_that_arrives_after_switching_documents_changes_neither() {
+    // Issue #167: insert into A, open C before the file is read: the pages went into C.
+    let mut h = harness(&[3, 1]);
+    h.state_mut().active = Some(0);
+    let request = browser_insert(&h, 1);
+    h.state_mut().active = Some(1);
+    h.state_mut().requests.lock().unwrap().push(request);
+    h.run_steps(2);
+    assert_eq!(pages(h.state(), 0), 3, "A is unchanged");
+    assert_eq!(pages(h.state(), 1), 1, "C is unchanged");
+    let toast = h.state().toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+    assert!(toast.contains("document changed"), "the user is told why nothing happened: {toast:?}");
+}
+
+#[test]
+fn a_browser_insert_into_a_document_edited_meanwhile_is_refused() {
+    let mut h = harness(&[3]);
+    let request = browser_insert(&h, 1);
+    h.state_mut().apply_edit(pdfcraft_engine::Edit::DeletePages { pages: vec![0] });
+    h.state_mut().requests.lock().unwrap().push(request);
+    h.run_steps(2);
+    assert_eq!(pages(h.state(), 0), 2, "only the user's own edit applied");
+}
+
+#[test]
+fn replace_pages_applies_only_to_the_document_its_dialog_was_opened_on() {
+    for switch in [false, true] {
+        let mut h = harness(&[3, 3]);
+        h.state_mut().active = Some(0);
+        h.state_mut().use_files(pdfcraft_ui_egui::FilePurpose::ReplacePages, vec![("r.pdf".into(), fixture(1))]);
+        h.run_steps(2);
+        assert_eq!(h.state().dialog, Some(pdfcraft_ui_egui::Dialog::ReplacePages));
+        if switch {
+            // A file opened meanwhile (a browser read finishing) becomes the active document.
+            h.state_mut().active = Some(1);
+            h.run_steps(2);
+        }
+        h.get_by_label("OK").click();
+        h.run_steps(2);
+        if switch {
+            assert!(!dirty(h.state(), 0) && !dirty(h.state(), 1), "neither document is changed");
+            let toast = h.state().toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+            assert!(toast.contains("document changed"), "the user is told why: {toast:?}");
+        } else {
+            assert!(dirty(h.state(), 0) && !dirty(h.state(), 1), "the first document's page is replaced");
+        }
+    }
+}

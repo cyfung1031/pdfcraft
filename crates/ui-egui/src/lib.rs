@@ -84,7 +84,7 @@ use pdfcraft_engine::{DocId, Session};
 
 pub use canvas::DocView;
 pub use editing::{CloseRequest, SaveTarget};
-pub use files::{ExtractDraft, FilePurpose, RotateDraft, SplitDraft, SplitMode, SplitPlan};
+pub use files::{ExtractDraft, FilePurpose, FileRequest, RotateDraft, SplitDraft, SplitMode, SplitPlan};
 pub use recovery::{AUTOSAVE_SECS, RecoveryMeta, RecoveryStore};
 use theme::{ThemeKind, ThemePreference};
 
@@ -882,6 +882,7 @@ impl PdfCraftApp {
         #[cfg(target_arch = "wasm32")]
         {
             let inbox = self.inbox.clone();
+            let ctx = self.ctx.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 if let Some(h) = rfd::AsyncFileDialog::new()
                     .add_filter("PDF", &["pdf"])
@@ -892,6 +893,10 @@ impl PdfCraftApp {
                     let bytes = h.read().await;
                     if let Ok(mut q) = inbox.lock() {
                         q.push((h.file_name(), bytes));
+                    }
+                    // The read may finish while the app is idle: wake it to open the file.
+                    if let Some(ctx) = ctx {
+                        ctx.request_repaint();
                     }
                 }
             });

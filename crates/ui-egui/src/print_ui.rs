@@ -180,31 +180,51 @@ impl PdfCraftApp {
                     false
                 }
             },
+            None => self.save_print_pdf(&name, bytes),
+        }
+    }
+
+    /// Print ▸ Save as PDF on the desktop: write to `save_override` (tests and automation), or
+    /// ask where and write on a later frame. Returns `true` once written, or once the save picker
+    /// is showing.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_print_pdf(&mut self, name: &str, bytes: Vec<u8>) -> bool {
+        let write = move |app: &mut Self, path: std::path::PathBuf| match crate::editing::write_atomically(&path.to_string_lossy(), &bytes) {
+            Ok(()) => {
+                app.notify_fmt("Saved the print-ready PDF to {path}", &[("path", &path.display().to_string())]);
+                true
+            }
+            Err(e) => {
+                app.notify_fmt("Could not save: {e}", &[("e", &e.to_string())]);
+                false
+            }
+        };
+        match self.save_override.clone() {
+            Some(p) => write(self, p.into()),
             None => {
-                let write = move |app: &mut Self, path: std::path::PathBuf| match crate::editing::write_atomically(&path.to_string_lossy(), &bytes) {
-                    Ok(()) => {
-                        app.notify_fmt("Saved the print-ready PDF to {path}", &[("path", &path.display().to_string())]);
-                        true
-                    }
-                    Err(e) => {
-                        app.notify_fmt("Could not save: {e}", &[("e", &e.to_string())]);
-                        false
-                    }
-                };
-                match self.save_override.clone() {
-                    Some(p) => write(self, p.into()),
-                    #[cfg(not(target_arch = "wasm32"))]
-                    None => {
-                        // Saved on a later frame, once the user has chosen where.
-                        let stem = name.trim_end_matches(".pdf").trim_end_matches(".PDF");
-                        let dialog = rfd::AsyncFileDialog::new().add_filter("PDF", &["pdf"]).set_file_name(format!("{stem} (print).pdf"));
-                        self.ask_one(crate::pickers::Ask::Save(dialog), None, move |app, path| {
-                            write(app, path);
-                        })
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    None => false,
-                }
+                let stem = name.trim_end_matches(".pdf").trim_end_matches(".PDF");
+                let dialog = rfd::AsyncFileDialog::new().add_filter("PDF", &["pdf"]).set_file_name(format!("{stem} (print).pdf"));
+                self.ask_one(crate::pickers::Ask::Save(dialog), None, move |app, path| {
+                    write(app, path);
+                })
+            }
+        }
+    }
+
+    /// Print ▸ Save as PDF in a browser: download it, as Save does (#170). There is no folder to
+    /// choose and no file system to write to, so `save_override` doesn't apply.
+    #[cfg(target_arch = "wasm32")]
+    fn save_print_pdf(&mut self, name: &str, bytes: Vec<u8>) -> bool {
+        let stem = name.trim_end_matches(".pdf").trim_end_matches(".PDF");
+        let file = format!("{stem} (print).pdf");
+        match crate::editing::download(&file, &bytes) {
+            Ok(()) => {
+                self.notify_fmt("Downloaded {name}", &[("name", &file)]);
+                true
+            }
+            Err(e) => {
+                self.notify_fmt("Couldn't download {name}: {e}", &[("name", &file), ("e", &e)]);
+                false
             }
         }
     }

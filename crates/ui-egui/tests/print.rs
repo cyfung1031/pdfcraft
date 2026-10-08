@@ -91,3 +91,20 @@ fn cut_stack_dialog_previews_saves_and_refuses_duplex() {
     assert_eq!(pdfcraft_model::pages(&printed).len(), 3);
     let _ = std::fs::remove_file(out);
 }
+
+#[test]
+fn a_failed_save_as_pdf_keeps_the_dialog_open() {
+    let mut h = harness();
+    assert!(h.state_mut().execute("print.dialog"));
+    h.run_steps(3);
+    h.state_mut().print_draft.printer = None;
+    // A folder that doesn't exist: the write fails.
+    let out = std::env::temp_dir().join(format!("pdfcraft-missing-{}", std::process::id())).join("x.pdf");
+    h.state_mut().save_override = Some(out.to_string_lossy().into_owned());
+    h.run_steps(2);
+    h.get_by_label("Save as PDF").click();
+    h.run_steps(3);
+    assert_eq!(h.state().dialog, Some(Dialog::Print), "the dialog stays open, with its settings");
+    let toast = h.state().toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+    assert!(toast.contains("Could not save"), "the user is told why: {toast:?}");
+}

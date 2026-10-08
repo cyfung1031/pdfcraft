@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use pdfcraft_engine::DocId;
 
 use crate::PdfCraftApp;
-use crate::files::FilePurpose;
+use crate::files::{FilePurpose, PickTarget};
 
 /// What the chosen files are for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,18 +57,9 @@ pub(crate) enum Ask {
 /// What to do with the chosen paths, on a later frame.
 type Then = Box<dyn FnOnce(&mut PdfCraftApp, Vec<PathBuf>) + Send>;
 
-/// The document a pick edits, as it was when the picker opened.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Target {
-    doc: DocId,
-    /// Its edit generation then: pages and objects the pick refers to by position are only
-    /// valid while it is unchanged.
-    generation: Option<u64>,
-}
-
 /// A finished pick, waiting for the next frame.
 struct Picked {
-    target: Option<Target>,
+    target: Option<PickTarget>,
     /// The chosen paths; empty when the picker was cancelled.
     paths: Vec<PathBuf>,
     then: Then,
@@ -111,7 +102,7 @@ impl Pickers {
     /// Wait for `pick` on a worker thread and queue its result for the next frame. On macOS
     /// `pick` must already have shown the picker (rfd starts the panel when the future is
     /// created, on the main thread). Returns false when the worker couldn't start.
-    fn spawn<F>(&self, target: Option<Target>, ctx: Option<egui::Context>, pick: F, then: Then) -> bool
+    fn spawn<F>(&self, target: Option<PickTarget>, ctx: Option<egui::Context>, pick: F, then: Then) -> bool
     where
         F: Future<Output = Vec<PathBuf>> + Send + 'static,
     {
@@ -119,7 +110,7 @@ impl Pickers {
     }
 
     /// [`Self::spawn`], returning the worker so tests can wait for it instead of polling.
-    fn spawn_worker<F>(&self, target: Option<Target>, ctx: Option<egui::Context>, pick: F, then: Then) -> Option<std::thread::JoinHandle<()>>
+    fn spawn_worker<F>(&self, target: Option<PickTarget>, ctx: Option<egui::Context>, pick: F, then: Then) -> Option<std::thread::JoinHandle<()>>
     where
         F: Future<Output = Vec<PathBuf>> + Send + 'static,
     {
@@ -140,7 +131,7 @@ impl Pickers {
 
     /// Queue a pick that is already known (tests and automation). Like a real pick, it keeps
     /// the flag until the frame uses it.
-    fn deliver(&self, target: Option<Target>, paths: Vec<PathBuf>, then: Then) {
+    fn deliver(&self, target: Option<PickTarget>, paths: Vec<PathBuf>, then: Then) {
         self.done.lock().unwrap_or_else(PoisonError::into_inner).push(Picked { target, paths, then });
     }
 
@@ -155,7 +146,7 @@ impl PdfCraftApp {
     pub(crate) fn pick(&mut self, pick_for: PickFor, dialog: rfd::AsyncFileDialog, multiple: bool) {
         // Insert and Replace edit the active document: remember which one.
         let target = match pick_for {
-            PickFor::Files(FilePurpose::InsertPages | FilePurpose::ReplacePages) => self.active_ids().map(|(_, id)| id),
+            PickFor::Files(purpose) if purpose.edits_active_document() => self.active_ids().map(|(_, id)| id),
             _ => None,
         };
         let ask = if multiple { Ask::Files(dialog) } else { Ask::File(dialog) };
@@ -181,7 +172,7 @@ impl PdfCraftApp {
             self.notify_tr("Another file dialog is still open. Finish with it first.");
             return false;
         }
-        let target = target.map(|doc| Target { doc, generation: self.session.get(doc).map(|d| d.edit_generation()) });
+        let target = self.pick_target(target);
         let then: Then = Box::new(then);
         if let Some(paths) = self.pick_override.clone() {
             self.pickers.deliver(target, paths.into_iter().map(PathBuf::from).collect(), then);
@@ -237,13 +228,8 @@ impl PdfCraftApp {
             if paths.is_empty() {
                 continue;
             }
-            if let Some(t) = target {
-                let active = self.active_ids().map(|(_, id)| id);
-                let generation = self.session.get(t.doc).map(|d| d.edit_generation());
-                if active != Some(t.doc) || generation != t.generation {
-                    self.notify_tr("The document changed while you were choosing a file, so nothing was changed.");
-                    continue;
-                }
+            if !self.still_pick_target(target) {
+                continue;
             }
             // Last-resort guard (AGENTS.md §4), as for commands: this work used to run inside
             // the command that asked, and a panic in it must not take the app down.
