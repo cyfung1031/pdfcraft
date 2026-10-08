@@ -670,6 +670,110 @@ trailer << /Root 1 0 R >>
         assert_eq!(px(20, 80), vec![255, 0, 0, 255], "checkbox must show the /Yes appearance, not the decoy stream");
     }
 
+    /// An appearance whose /BBox is a line or a point, or whose /Matrix collapses it to one, has
+    /// no mapping onto the annotation's /Rect: the scale (/Rect size over transformed box size)
+    /// divided by zero, and the infinite or NaN matrix reached the device with everything the
+    /// appearance drew. Vendored hayro-interpret patch: such appearances are skipped. Clipped to
+    /// their box they show nothing, and MuPDF and Poppler draw nothing for them either.
+    #[test]
+    fn degenerate_annotation_appearances_are_skipped() {
+        use hayro::hayro_interpret::font::Glyph;
+        use hayro::hayro_interpret::hayro_syntax::Pdf;
+        use hayro::hayro_interpret::{
+            BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, Paint, PathDrawMode, SoftMask, TransformExt, interpret_page,
+        };
+        use kurbo::{Affine, BezPath, Rect};
+
+        /// Counts the geometry that reaches a device, and how much of it is not finite.
+        #[derive(Default)]
+        struct Geometry {
+            drawn: usize,
+            non_finite: usize,
+        }
+        impl Geometry {
+            fn see(&mut self, finite: bool) {
+                self.drawn += 1;
+                self.non_finite += usize::from(!finite);
+            }
+        }
+        impl<'a> Device<'a> for Geometry {
+            fn set_soft_mask(&mut self, _: Option<SoftMask<'a>>) {}
+            fn set_blend_mode(&mut self, _: BlendMode) {}
+            fn draw_path(&mut self, path: &BezPath, transform: Affine, _: &Paint<'a>, _: &PathDrawMode) {
+                self.see(path.is_finite() && transform.is_finite());
+            }
+            fn push_clip_path(&mut self, clip: &ClipPath) {
+                self.see(clip.path.is_finite());
+            }
+            fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
+            fn draw_glyph(&mut self, _: &Glyph<'a>, transform: Affine, glyph_transform: Affine, _: &Paint<'a>, _: &GlyphDrawMode) {
+                self.see(transform.is_finite() && glyph_transform.is_finite());
+            }
+            fn draw_image(&mut self, _: Image<'a, '_>, transform: Affine) {
+                self.see(transform.is_finite());
+            }
+            fn pop_clip_path(&mut self) {}
+            fn pop_transparency_group(&mut self) {}
+        }
+
+        let pdf = |form: &str| {
+            let content = "1 0 0 rg 0 0 20 20 re f BT /F1 12 Tf 2 5 Td (Hi) Tj ET";
+            format!(
+                "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [4 0 R] >> endobj
+4 0 obj << /Type /Annot /Subtype /Square /Rect [10 10 60 40] /AP << /N 5 0 R >> >> endobj
+5 0 obj << /Type /XObject /Subtype /Form {form} /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Length {} >> stream
+{content}
+endstream endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+                content.len()
+            )
+        };
+        let geometry = |bytes: &[u8]| {
+            let parsed = Pdf::new(Arc::new(bytes.to_vec())).expect("parses");
+            let page = &parsed.pages()[0];
+            let cache = InterpreterCache::new();
+            let initial = page.initial_transform(true).to_kurbo();
+            let mut ctx = Context::new(initial, Rect::new(0.0, 0.0, 100.0, 100.0), &cache, page.xref(), InterpreterSettings::default());
+            let mut device = Geometry::default();
+            interpret_page(page, &mut ctx, &mut device);
+            device
+        };
+        let render = |bytes: Vec<u8>| {
+            let mut r = PageRenderer::new(Arc::new(bytes), RenderConfig::default());
+            r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 })
+        };
+        for (case, form) in [
+            ("zero-width /BBox", "/BBox [0 0 0 20]"),
+            ("zero-height /BBox", "/BBox [0 0 20 0]"),
+            ("point /BBox", "/BBox [5 5 5 5]"),
+            ("/Matrix with a zero column", "/BBox [0 0 20 20] /Matrix [0 0 0 1 0 0]"),
+            ("/Matrix with a zero row", "/BBox [0 0 20 20] /Matrix [1 0 0 0 0 0]"),
+        ] {
+            let bytes = pdf(form).into_bytes();
+            let device = geometry(&bytes);
+            assert_eq!(device.non_finite, 0, "{case}: {} of {} drawing calls were not finite", device.non_finite, device.drawn);
+            let p = render(bytes);
+            assert!(p.error.is_none(), "{case}: {:?}", p.error);
+            assert!(p.rgba.as_chunks::<4>().0.iter().all(|c| *c == [255, 255, 255, 255]), "{case}: nothing is drawn");
+        }
+
+        // A valid appearance still reaches the device, and fills its /Rect and only its /Rect.
+        let valid = pdf("/BBox [0 0 20 20]").into_bytes();
+        let device = geometry(&valid);
+        assert!(device.drawn >= 4 && device.non_finite == 0, "{} drawn, {} non-finite", device.drawn, device.non_finite);
+        let p = render(valid);
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let px = |x: u32, y: u32| p.rgba[((y * p.width + x) * 4) as usize..][..4].to_vec();
+        assert_eq!(px(11, 61), vec![255, 0, 0, 255]);
+        assert_eq!(px(58, 88), vec![255, 0, 0, 255]);
+        assert_eq!(px(61, 75), vec![255, 255, 255, 255], "right of /Rect");
+        assert_eq!(px(30, 58), vec![255, 255, 255, 255], "above /Rect");
+    }
+
     #[test]
     fn hiding_comments_keeps_fields() {
         let pdf = b"%PDF-1.7

@@ -220,6 +220,19 @@ pub fn interpret_page<'a>(
                     annot_rect.y0 - transformed_rect.y0,
                 ]);
 
+                // PdfCraft patch: a /BBox or /Matrix that collapses the appearance box to a line
+                // or a point leaves nothing to map onto /Rect: the scales above divide by zero,
+                // and the infinite or NaN matrix reached the device with everything the
+                // appearance draws. Clipped to such a box the appearance shows nothing, so skip
+                // it, as when the mapping overflows.
+                if !(transformed_rect.is_finite()
+                    && transformed_rect.width() > 0.0
+                    && transformed_rect.height() > 0.0
+                    && affine.is_finite())
+                {
+                    continue;
+                }
+
                 // 3) Matrix shall be concatenated with A to form a matrix
                 // AA that maps from the appearance’s coordinate system to
                 // the annotation’s rectangle in default user space.
