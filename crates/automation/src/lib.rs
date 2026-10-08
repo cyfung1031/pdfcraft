@@ -155,6 +155,7 @@ impl Automation {
                 self.apply(&a, edit)?
             }
             "page_render" => return self.page_render(&a).map(|c| vec![c]),
+            "comment_image_preview" => return self.comment_image_preview(&a),
             "text_extract" => self.text_extract(&a)?,
             "text_find" => self.text_find(&a)?,
             "page_rotate" => {
@@ -201,6 +202,7 @@ impl Automation {
             "page_insert_file" => self.insert_file(&a)?,
             "page_extract" => self.page_extract(&a)?,
             "doc_combine" => self.doc_combine(&a)?,
+            "doc_create_multiple" => self.doc_create_multiple(&a)?,
             "doc_split" => self.doc_split(&a)?,
             "edit_undo" => {
                 let id = self.doc(&a)?.id;
@@ -1141,6 +1143,63 @@ impl Automation {
         Ok(result)
     }
 
+    fn doc_create_multiple(&mut self, a: &Args) -> Result<Value> {
+        let paths = a.strs("paths")?;
+        if paths.is_empty() || paths.len() > pdfcraft_engine::MAX_CREATE_FILES {
+            return Err(ToolError::InvalidArgs(format!("paths must list 1 to {} files", pdfcraft_engine::MAX_CREATE_FILES)));
+        }
+        let separate = match a.opt_str("mode")? {
+            None | Some("combine") => false,
+            Some("separate") => true,
+            Some(m) => return Err(ToolError::InvalidArgs(format!("mode must be \"combine\" or \"separate\", not {m:?}"))),
+        };
+        if separate {
+            return self.create_separate(a, &paths);
+        }
+        let ranges: Vec<Option<String>> = match a.get("pages") {
+            None | Some(Value::Null) => vec![None; paths.len()],
+            Some(Value::Array(v)) if v.len() == paths.len() => v.iter().map(|x| x.as_str().map(str::to_owned)).collect(),
+            Some(_) => return Err(ToolError::InvalidArgs("pages must list a range (or null) for each path".into())),
+        };
+        let mut sources = Vec::new();
+        for (p, range) in paths.into_iter().zip(ranges) {
+            let path = self.resolve(p, false)?;
+            let bytes = std::fs::read(&path).map_err(|e| failed(format!("{}: {e}", path.display())))?;
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let (_, pdf) = self.session.convert_to_pdf(&name, &Arc::new(bytes)).map_err(failed)?;
+            let title = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            sources.push((title, pdf, range));
+        }
+        let bytes = self.session.combine_ranges(&sources).map_err(failed)?;
+        self.deliver(a, "Combined", bytes)
+    }
+
+    /// One PDF per file, written into `out_dir`; a file that fails doesn't stop the others.
+    fn create_separate(&mut self, a: &Args, paths: &[&str]) -> Result<Value> {
+        let dir = self.resolve(a.str("out_dir").map_err(|_| ToolError::InvalidArgs("mode \"separate\" needs out_dir".into()))?, true)?;
+        std::fs::create_dir_all(&dir).map_err(|e| failed(format!("{}: {e}", dir.display())))?;
+        let mut out = Vec::new();
+        for &p in paths {
+            let converted = self.resolve(p, false).map_err(|e| e.to_string()).and_then(|src| {
+                let bytes = std::fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+                let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let stem = src.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
+                let (kind, pdf) = self.session.convert_to_pdf(&name, &Arc::new(bytes)).map_err(|e| e.to_string())?;
+                Ok((kind, stem, pdf))
+            });
+            out.push(match converted {
+                Ok((pdfcraft_engine::SourceKind::Pdf, ..)) => json!({ "path": p, "skipped": "already a PDF" }),
+                Ok((_, stem, pdf)) => {
+                    let target = unused(&dir, &stem);
+                    write_atomic(&target, &pdf)?;
+                    json!({ "path": p, "output": target.to_string_lossy(), "bytes": pdf.len() })
+                }
+                Err(e) => json!({ "path": p, "error": e }),
+            });
+        }
+        Ok(json!({ "files": out }))
+    }
+
     fn page_extract(&mut self, a: &Args) -> Result<Value> {
         let doc = self.doc(a)?;
         let (id, name) = (doc.id, format!("{} (extract)", doc.name));
@@ -1733,6 +1792,15 @@ fn child(dir: &Path, name: &str) -> PathBuf {
         safe.insert(0, '_');
     }
     dir.join(safe)
+}
+
+/// `<stem>.pdf` in `dir`, or `<stem> (2).pdf` and so on when that name is taken.
+fn unused(dir: &Path, stem: &str) -> PathBuf {
+    let first = child(dir, &format!("{stem}.pdf"));
+    if !first.exists() {
+        return first;
+    }
+    (2..10_000u32).map(|n| child(dir, &format!("{stem} ({n}).pdf"))).find(|p| !p.exists()).unwrap_or(first)
 }
 
 /// Write via a temporary file in the same directory, then rename over the target.
