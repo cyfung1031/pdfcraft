@@ -2092,7 +2092,8 @@ fn comments_without_appearances_are_drawn_but_not_saved() {
         let px = |x: u32, y: u32| p.rgba[((y * p.width + x) * 4) as usize..][..4].to_vec();
         // y down: the FreeText box spans rows 40..100, the Ink apex is at (100, 190).
         assert_eq!(px(100, 90), vec![217, 120, 5, 255], "the FreeText background");
-        assert_eq!(px(100, 192), vec![0, 153, 0, 255], "the Ink stroke");
+        // On the apex row: Ink is drawn as a curve through its points (#374), level at the apex.
+        assert_eq!(px(100, 190), vec![0, 153, 0, 255], "the Ink stroke");
     };
     check(&s);
     let doc = s.get(id).unwrap();
