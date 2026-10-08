@@ -1157,6 +1157,7 @@ impl PdfCraftApp {
             "default_mode": self.default_mode,
             "default_layout": self.view_defaults.layout.as_str(),
             "default_zoom": self.view_defaults.zoom_name(),
+            "highlight_fields": self.view_defaults.highlight_fields,
             "language": self.language,
             "author": self.comment_prefs.author,
             // Drawn signatures keep their original form (older settings read the same).
@@ -1193,6 +1194,9 @@ impl PdfCraftApp {
         }
         if let Some(layout) = v["default_layout"].as_str().and_then(canvas::PageLayout::try_parse) {
             self.view_defaults.layout = layout;
+        }
+        if let Some(on) = v["highlight_fields"].as_bool() {
+            self.view_defaults.highlight_fields = on;
         }
         if let Some(defaults) = v["default_zoom"].as_str().and_then(|zoom| self.view_defaults.with_zoom(zoom)) {
             self.view_defaults = defaults;
