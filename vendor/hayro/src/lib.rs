@@ -156,7 +156,8 @@ pub fn render_size(page: &Page<'_>, render_settings: &RenderSettings) -> (u16, u
 
 /// PdfCraft patch: [`render`] into `buffer`, premultiplied RGBA8 rows of [`render_size`]
 /// pixels, so the caller chooses the allocation (one aligned to whole pixels can then become
-/// texture data without a copy). `buffer.len()` must be width × height × 4.
+/// texture data without a copy). `buffer.len()` must be width × height × 4; any other length
+/// leaves `buffer` untouched (vello_cpu asserts on the length, and a panic must not be reachable).
 pub fn render_into<'a>(
     page: &'a Page<'a>,
     cache: &RenderCache<'a>,
@@ -170,6 +171,12 @@ pub fn render_into<'a>(
         * page.initial_transform(true).to_kurbo();
 
     let (pix_width, pix_height) = render_size(page, render_settings);
+    let expected = (pix_width as usize)
+        .checked_mul(pix_height as usize)
+        .and_then(|n| n.checked_mul(4));
+    if expected != Some(buffer.len()) {
+        return;
+    }
     let mut state = Context::new(
         initial_transform,
         Rect::new(0.0, 0.0, pix_width as f64, pix_height as f64),
