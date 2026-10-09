@@ -228,10 +228,18 @@ impl Renderer {
         new_width: u32,
         new_height: u32,
         pixel_format: ImagePixelFormat,
+        interpolate: bool,
     ) -> Vec<u8> {
+        // PdfCraft patch (#624): `/Interpolate` governs the pre-minification pass too. Using
+        // Catmull-Rom here for an image that did not request interpolation blends hard edges
+        // before ImageQuality::Low gets a chance to sample it. Keep the pre-resize (and its
+        // bounded memory/performance behaviour), but use nearest-neighbour when interpolation
+        // is disabled. PDF's default for `/Interpolate` is false.
+        let nearest = Scaler::new(ResamplingFunction::Nearest);
+        let scaler = if interpolate { &self.scaler } else { &nearest };
         match pixel_format {
             ImagePixelFormat::Luma => self.resize_image_data_impl::<1>(
-                data,
+                scaler, data,
                 src_width,
                 src_height,
                 new_width,
@@ -241,7 +249,7 @@ impl Renderer {
                 },
             ),
             ImagePixelFormat::Rgb => self.resize_image_data_impl::<3>(
-                data,
+                scaler, data,
                 src_width,
                 src_height,
                 new_width,
@@ -251,7 +259,7 @@ impl Renderer {
                 },
             ),
             ImagePixelFormat::Rgba => self.resize_image_data_impl::<4>(
-                data,
+                scaler, data,
                 src_width,
                 src_height,
                 new_width,
@@ -265,6 +273,7 @@ impl Renderer {
 
     fn resize_image_data_impl<const N: usize>(
         &self,
+        scaler: &Scaler,
         data: Vec<u8>,
         src_width: u32,
         src_height: u32,
@@ -284,7 +293,7 @@ impl Renderer {
         let mut dst =
             ImageStoreMut::<u8, N>::from_slice(&mut out, new_width as usize, new_height as usize)
                 .unwrap();
-        let plan = plan(&self.scaler, source_size, target_size).unwrap();
+        let plan = plan(scaler, source_size, target_size).unwrap();
         plan.resample(&src, &mut dst).unwrap();
         out
     }
@@ -356,6 +365,7 @@ impl Renderer {
                     new_width,
                     new_height,
                     ImagePixelFormat::Luma,
+                    interpolate,
                 );
                 additional_transform = Affine::scale_non_uniform(
                     img_width as f64 / new_width as f64,
@@ -382,6 +392,7 @@ impl Renderer {
                 new_width,
                 new_height,
                 ImagePixelFormat::Rgb,
+                interpolate,
             );
             additional_transform = Affine::scale_non_uniform(
                 img_width as f64 / new_width as f64,
@@ -430,6 +441,7 @@ impl Renderer {
                     new_width,
                     new_height,
                     ImagePixelFormat::Rgba,
+                    interpolate,
                 );
                 additional_transform = Affine::scale_non_uniform(
                     img_width as f64 / new_width as f64,

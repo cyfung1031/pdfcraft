@@ -2939,6 +2939,66 @@ trailer << /Root 1 0 R >>
         assert_eq!(&page.rgba[((38 * 40 + 1) * 4)..][..4], &[255, 0, 0, 255]);
     }
 
+    /// Issue #624: an image drawn below its source resolution was pre-resampled with Catmull-Rom
+    /// even when `/Interpolate` was false (or absent, whose PDF default is false). That blends
+    /// neighboring samples before the renderer's later non-interpolating image sampler sees them,
+    /// making scans, screenshots and rasterized text look soft.
+    #[test]
+    fn non_interpolated_images_are_not_smoothed_when_minified() {
+        let render = |interpolate: Option<bool>| {
+            // Eight alternating black/white RGB columns, repeated over four rows. Painting the
+            // 8×4 source into 4×2 device pixels forces Hayro's image pre-resize path (0.5×).
+            let mut image = Vec::with_capacity(8 * 4 * 3);
+            for _ in 0..4 {
+                for x in 0..8 {
+                    let v = if x % 2 == 0 { 0u8 } else { 255u8 };
+                    image.extend_from_slice(&[v, v, v]);
+                }
+            }
+            let interp = interpolate.map_or_else(String::new, |value| format!("/Interpolate {value}"));
+            let content = "q 4 0 0 2 0 0 cm /Im0 Do Q";
+            let mut pdf = format!(
+                "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 4 2] /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /XObject /Subtype /Image /Width 8 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 {interp} /Length {} >> stream
+",
+                content.len(),
+                image.len()
+            )
+            .into_bytes();
+            pdf.extend_from_slice(&image);
+            pdf.extend_from_slice(b"\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n");
+            let mut r = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+            assert!(p.error.is_none(), "{interpolate:?}: {:?}", p.error);
+            assert_eq!((p.width, p.height), (4, 2));
+            p
+        };
+
+        let crisp = |p: &RenderedPage| p.rgba.as_chunks::<4>().0.iter().all(|px| px[..3].iter().all(|&c| c <= 16 || c >= 239) && px[3] == 255);
+
+        // `/Interpolate` defaults to false, and explicit false is equivalent. Neither path may
+        // invent mid-tones while minifying this hard-edged source image.
+        let omitted = render(None);
+        assert!(crisp(&omitted), "default interpolation produced smoothed pixels: {:?}", omitted.rgba.as_chunks::<4>().0);
+        let disabled = render(Some(false));
+        assert!(crisp(&disabled), "/Interpolate false produced smoothed pixels: {:?}", disabled.rgba.as_chunks::<4>().0);
+
+        // The fix must not globally disable image interpolation. The same source explicitly
+        // asking for interpolation should still contain at least one blended sample.
+        let enabled = render(Some(true));
+        assert!(
+            enabled.rgba.as_chunks::<4>().0.iter().any(|px| (32..=223).contains(&px[0])),
+            "/Interpolate true did not produce a blended sample: {:?}",
+            enabled.rgba.as_chunks::<4>().0
+        );
+    }
+
     /// From `cargo xtask fuzz`: a CID font whose /W range spans every u32 inserted billions of
     /// widths (vendored hayro-interpret patch: `MAX_CID`). Must finish quickly.
     #[test]
