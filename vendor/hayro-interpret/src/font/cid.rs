@@ -41,6 +41,9 @@ pub(crate) struct Type0Font {
     /// Whether the `to_unicode` map is a UCS2 `CMap` (CID-indexed) rather than
     /// a `ToUnicode` `CMap` (code-indexed).
     to_unicode_is_cid_indexed: bool,
+    /// PdfCraft patch: whether the CIDs belong to an Adobe character collection (Japan1, GB1,
+    /// CNS1, Korea1), whose glyph numbering no substitute other than a CID-keyed CFF font shares.
+    adobe_collection: bool,
 }
 
 impl Type0Font {
@@ -129,6 +132,10 @@ impl Type0Font {
             }
         }
 
+        let adobe_collection = character_collection
+            .as_ref()
+            .is_some_and(|cc| cc.family.ucs2_cmap().is_some());
+
         let postscript_name = dict
             .get::<Name<'_>>(BASE_FONT)
             .map(|n| strip_subset_prefix(n.as_str()).to_string());
@@ -153,6 +160,7 @@ impl Type0Font {
             font_flags,
             fallback,
             to_unicode_is_cid_indexed,
+            adobe_collection,
         })
     }
 
@@ -174,6 +182,16 @@ impl Type0Font {
         {
             // Yay, Unicode worked!
             return glyph;
+        }
+
+        // PdfCraft patch: a substitute that isn't CID-keyed numbers its glyphs its own way, so
+        // the CID of an Adobe character collection taken as its glyph index draws an unrelated
+        // glyph. Draw .notdef, as for a CID the font has no glyph for.
+        if self.fallback
+            && self.adobe_collection
+            && !matches!(&self.font_type, FontType::Cff(c) if c.is_cid())
+        {
+            return GlyphId::NOTDEF;
         }
 
         // At this point, not much we can do anymore. Just hope that the
