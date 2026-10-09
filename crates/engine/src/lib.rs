@@ -44,7 +44,7 @@ pub use pdfcraft_forms::{
 };
 
 pub use pdfcraft_a11y as a11y;
-pub use pdfcraft_edit::{BlockStyle, PageImage, TextBlock, TextLine};
+pub use pdfcraft_edit::{BlockStyle, PageImage, TextBlock, TextLine, first_undrawable};
 pub use pdfcraft_measure as measure;
 pub use pdfcraft_xfa::Report as XfaLayout;
 
@@ -94,8 +94,8 @@ pub fn typed_signature_shape(at: [f64; 2], text: &str, height: f64, rotation: i6
 pub use pdfcraft_annot::appearance as annot_text;
 pub use pdfcraft_annot::links::{Highlight as LinkHighlight, LinkAction, LinkItem, LinkStyle};
 pub use pdfcraft_annot::{
-    AttachIcon, FillMark, Markup, NOTE_SIZE, NewAnnotation, NoteIcon, OverlayFont, OverlayLook, Props as CommentProps, ReviewState, Rgb, Shape,
-    StampGroup, StampKind, Style, rect_quad,
+    AttachIcon, FillMark, LineEnding, Markup, NOTE_SIZE, NewAnnotation, NoteIcon, OverlayFont, OverlayLook, Props as CommentProps, ReviewState, Rgb,
+    Shape, StampGroup, StampKind, Style, rect_quad,
 };
 pub use pdfcraft_forms::detect;
 pub use pdfcraft_optimize as optimize;
@@ -852,6 +852,8 @@ pub enum Edit {
         color: Option<Rgb>,
         opacity: Option<f64>,
         width: Option<f64>,
+        /// Line or polyline: two endings. Callout: one. `None` leaves `/LE` unchanged.
+        endings: Option<Vec<pdfcraft_annot::LineEnding>>,
     },
     /// Comment properties ▸ General / note icon.
     SetAnnotationInfo {
@@ -1197,7 +1199,7 @@ fn annotation_noun(s: &Shape) -> &'static str {
         Shape::TextMarkup { kind: Markup::Squiggly, .. } => "squiggly underline",
         Shape::Rectangle { .. } => "rectangle",
         Shape::Oval { .. } => "oval",
-        Shape::Line { arrow: true, .. } => "arrow",
+        Shape::Line { start: LineEnding::None, end: LineEnding::OpenArrow, .. } => "arrow",
         Shape::Line { .. } => "line",
         Shape::Ink { .. } => "drawing",
         Shape::TextBox { .. } => "text box",
@@ -1494,8 +1496,8 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
         Edit::LockAnnotation { page, index, locked } => pdfcraft_annot::set_locked(doc, *page, *index, *locked)?,
         Edit::MoveAnnotation { page, index, dx, dy } => pdfcraft_annot::move_annotation(doc, *page, *index, *dx, *dy, &cx.meta())?,
         Edit::ResizeAnnotation { page, index, rect } => pdfcraft_annot::set_rect(doc, *page, *index, *rect, &cx.meta())?,
-        Edit::StyleAnnotation { page, index, color, opacity, width } => {
-            pdfcraft_annot::set_style(doc, *page, *index, *color, *opacity, *width, &cx.meta())?;
+        Edit::StyleAnnotation { page, index, color, opacity, width, endings } => {
+            pdfcraft_annot::set_style(doc, *page, *index, *color, *opacity, *width, endings.as_deref(), &cx.meta())?;
         }
         Edit::SetAnnotationInfo { page, index, author, subject, icon } => {
             pdfcraft_annot::set_info(doc, *page, *index, author.as_deref(), subject.as_deref(), *icon, &cx.meta())?;

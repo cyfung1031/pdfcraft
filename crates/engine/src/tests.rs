@@ -79,7 +79,7 @@ fn custom_image_stamp_keeps_displayed_orientation_on_rotated_pages() {
         for (actual, expected) in bounds.into_iter().zip([60.0, 80.0, 140.0, 120.0]) {
             assert!((actual - expected).abs() < 0.0001, "displayed bounds {bounds:?}");
         }
-        session.apply(id, Edit::StyleAnnotation { page: 0, index: 0, color: None, opacity: Some(1.0), width: None }).unwrap();
+        session.apply(id, Edit::StyleAnnotation { page: 0, index: 0, color: None, opacity: Some(1.0), width: None, endings: None }).unwrap();
         check(&session, points);
         let resized = info.view_rect_to_user([40.0, 70.0, 160.0, 130.0]).map(f64::from);
         session.apply(id, Edit::ResizeAnnotation { page: 0, index: 0, rect: resized }).unwrap();

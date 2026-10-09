@@ -296,6 +296,7 @@
 	Bottom:	下：
 	Width:	宽：
 	Height:	高：
+	Rotation:	旋转：
 	Points from the page's bottom-left corner.	从页面左下角算起的点数。
 	Alignment:	对齐：
 	Default Value:	默认值：
@@ -614,6 +615,7 @@
 	This comment's appearance can't be changed yet.	此注释的外观尚无法更改。
 	Icon	图标
 	Thickness	粗细
+	Line ending	线条端点
 	Modified	修改时间
 	No status has been set.	尚未设置状态。
 	Compare Files	比较文件
@@ -2048,3 +2050,4 @@
 	Choose a PNG or JPEG image (up to 4 MiB). Transparency is preserved.	选择 PNG 或 JPEG 图像（最大 4 MiB）。透明度会保留。
 	Couldn't import the signature image: {e}	无法导入签名图像：{e}
 	Go to page…	转到页面…
+	The standard fonts can't draw “{c}” ({code}). Only Western European characters can be added as text for now.	标准字体无法显示“{c}”（{code}）。目前只能添加西欧字符作为文本。

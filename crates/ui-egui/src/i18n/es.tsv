@@ -599,6 +599,7 @@
 	Bottom:	Inferior:
 	Width:	Ancho:
 	Height:	Alto:
+	Rotation:	Rotación:
 	Points from the page's bottom-left corner.	Puntos desde la esquina inferior izquierda de la página.
 	Alignment:	Alineación:
 	Default Value:	Valor predeterminado:
@@ -2003,3 +2004,4 @@
 	Choose a PNG or JPEG image (up to 4 MiB). Transparency is preserved.	Elija una imagen PNG o JPEG (hasta 4 MiB). Se conserva la transparencia.
 	Couldn't import the signature image: {e}	No se pudo importar la imagen de la firma: {e}
 	Go to page…	Ir a la página…
+	The standard fonts can't draw “{c}” ({code}). Only Western European characters can be added as text for now.	Las fuentes estándar no pueden mostrar «{c}» ({code}). Por ahora solo se pueden añadir como texto caracteres de Europa occidental.

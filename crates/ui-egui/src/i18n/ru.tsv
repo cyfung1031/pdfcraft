@@ -597,6 +597,7 @@
 	Bottom:	Снизу:
 	Width:	Ширина:
 	Height:	Высота:
+	Rotation:	Поворот:
 	Points from the page's bottom-left corner.	Точки от левого нижнего угла страницы.
 	Alignment:	Выравнивание:
 	Default Value:	Значение по умолчанию:
@@ -915,6 +916,7 @@
 	This comment's appearance can't be changed yet.	Внешний вид этого комментария пока нельзя изменить.
 	Icon	Значок
 	Thickness	Толщина
+	Line ending	Окончание линии
 	Modified	Изменено
 	No status has been set.	Статус не установлен.
 	Compare Files	Сравнить файлы
@@ -1998,3 +2000,4 @@
 	Created a PDF from {n} files; left out: {names}	PDF создан из файлов: {n}; пропущены: {names}
 	Created a PDF from the first {n} files	PDF создан из первых файлов: {n}
 	Go to page…	Перейти на страницу…
+	The standard fonts can't draw “{c}” ({code}). Only Western European characters can be added as text for now.	Стандартные шрифты не могут отобразить «{c}» ({code}). Пока в виде текста можно добавлять только западноевропейские символы.

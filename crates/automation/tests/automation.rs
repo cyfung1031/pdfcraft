@@ -1699,6 +1699,34 @@ fn preparing_a_form_through_tools() {
 }
 
 #[test]
+fn rotating_a_field_through_tools() {
+    let dir = workdir("rotate-field");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "form_add_field", json!({ "doc": doc, "page": 1, "type": "text", "rect": [20, 20, 180, 42], "name": "City" }));
+    let rect_of = |a: &mut Automation| {
+        let f = &ok(a, "form_fields", json!({ "doc": doc }))["fields"][0];
+        (f["rotation"].as_i64().unwrap(), f["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>())
+    };
+    let (rot, before) = rect_of(&mut a);
+    assert_eq!(rot, 0);
+    assert!(matches!(a.call("form_set_props", &json!({ "doc": doc, "field": "City", "rotation": 45 })), Err(ToolError::InvalidArgs(_))));
+    assert_eq!(rect_of(&mut a).1, before, "a rejected rotation changes nothing");
+    ok(&mut a, "form_set_props", json!({ "doc": doc, "field": "City", "rotation": 90 }));
+    let (rot, turned) = rect_of(&mut a);
+    assert_eq!(rot, 90);
+    let (bw, bh) = (before[2] - before[0], before[3] - before[1]);
+    let (tw, th) = (turned[2] - turned[0], turned[3] - turned[1]);
+    assert!((tw - bh).abs() < 0.2 && (th - bw).abs() < 0.2, "swapped {before:?} -> {turned:?}");
+    let center = |r: &[f64]| ((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0);
+    let (bc, tc) = (center(&before), center(&turned));
+    assert!((bc.0 - tc.0).abs() < 0.2 && (bc.1 - tc.1).abs() < 0.2, "center moved {bc:?} -> {tc:?}");
+    assert_eq!(ok(&mut a, "edit_undo", json!({ "doc": doc }))["undone"], "Change field properties");
+    let (rot, back) = rect_of(&mut a);
+    assert_eq!((rot, back), (0, before));
+}
+
+#[test]
 fn redacting_through_tools() {
     let dir = workdir("redact");
     std::fs::write(dir.join("memo.txt"), "Call 555-123-4567 today\nSSN 123-45-6789 is private\nPublic line").unwrap();
@@ -2217,6 +2245,72 @@ fn comment_checkmarks_locks_hiding_and_summaries_through_tools() {
     let found = ok(&mut a, "text_find", json!({ "doc": text, "query": "Sticky" }));
     assert!(found["count"].as_u64().unwrap() >= 1, "{found}");
     assert!(matches!(a.call("comments_summarize", &json!({ "doc": doc, "sort": "colour" })), Err(ToolError::InvalidArgs(_))));
+}
+
+#[test]
+fn line_endings_through_the_tool() {
+    let dir = workdir("endings");
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "comment_add", json!({ "doc": doc, "page": 1, "type": "line", "from": [20, 40], "to": [120, 80], "endings": ["None", "Diamond"] }));
+    ok(
+        &mut a,
+        "comment_add",
+        json!({ "doc": doc, "page": 1, "type": "polyline", "points": [[20, 120], [60, 100], [100, 140]], "endings": ["Circle", "Slash"] }),
+    );
+    ok(
+        &mut a,
+        "comment_add",
+        json!({ "doc": doc, "page": 1, "type": "callout", "rect": [110, 200, 190, 240], "to": [40, 160], "contents": "Look", "endings": ["Square"] }),
+    );
+    assert!(matches!(
+        a.call("comment_add", &json!({ "doc": doc, "page": 1, "type": "line", "from": [20, 40], "to": [120, 80], "endings": ["Sparkle", "None"] })),
+        Err(ToolError::InvalidArgs(_))
+    ));
+    assert!(matches!(
+        a.call(
+            "comment_add",
+            &json!({ "doc": doc, "page": 1, "type": "callout", "rect": [10, 10, 80, 40], "to": [90, 80], "endings": ["None", "None"] })
+        ),
+        Err(ToolError::InvalidArgs(_))
+    ));
+    assert!(matches!(
+        a.call("comment_add", &json!({ "doc": doc, "page": 1, "type": "rectangle", "rect": [10, 10, 40, 40], "endings": ["Circle"] })),
+        Err(ToolError::InvalidArgs(_))
+    ));
+    ok(&mut a, "doc_save", json!({ "doc": doc, "path": "ended.pdf" }));
+    let saved = pdfcraft_cos::Document::open(std::sync::Arc::new(std::fs::read(dir.join("ended.pdf")).unwrap())).unwrap();
+    for name in [b"Diamond".as_slice(), b"Circle", b"Slash", b"Square"] {
+        assert!(
+            saved.object_numbers().iter().any(|n| saved.try_get(*n).ok().is_some_and(|o| object_has_name(&o, name))),
+            "missing /{}",
+            String::from_utf8_lossy(name)
+        );
+    }
+    let drawn: Vec<String> = saved
+        .object_numbers()
+        .into_iter()
+        .filter_map(|n| {
+            let obj = saved.try_get(n).ok()?;
+            let pdfcraft_cos::Object::Stream(s) = &*obj else { return None };
+            if s.dict.name(b"Subtype") != Some(b"Form") {
+                return None;
+            }
+            s.decoded().ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+        })
+        .collect();
+    assert!(drawn.iter().any(|s| s.contains("h B")), "a filled ending was drawn: {drawn:?}");
+    assert!(drawn.iter().any(|s| s.contains(" l S")), "an open ending was drawn: {drawn:?}");
+}
+
+fn object_has_name(obj: &pdfcraft_cos::Object, name: &[u8]) -> bool {
+    match obj {
+        pdfcraft_cos::Object::Name(n) => n.as_slice() == name,
+        pdfcraft_cos::Object::Array(items) => items.iter().any(|o| object_has_name(o, name)),
+        pdfcraft_cos::Object::Dict(d) => d.iter().any(|(_, o)| object_has_name(o, name)),
+        pdfcraft_cos::Object::Stream(s) => s.dict.iter().any(|(_, o)| object_has_name(o, name)),
+        _ => false,
+    }
 }
 
 #[test]

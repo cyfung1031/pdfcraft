@@ -132,7 +132,7 @@ fn language_switch_preserves_document_and_command_ids() {
     let documents = ok(&mut h, &c, "ui.state", json!({}))["documents"].clone();
     assert_eq!(documents[0]["dirty"], true);
     let commands = ok(&mut h, &c, "ui.commands", json!({}));
-    for code in ["ja", "zh-hans", "fr", "de", "en"] {
+    for code in ["ja", "zh-hans", "fr", "de", "uk", "en"] {
         ok(&mut h, &c, "ui.set", json!({ "key": "language", "value": code }));
         h.run_steps(2);
         let state = ok(&mut h, &c, "ui.state", json!({}));
@@ -534,6 +534,38 @@ fn german_preferences_and_search_keep_command_ids() {
 }
 
 #[test]
+fn ukrainian_preferences_and_search_keep_command_ids() {
+    let (mut h, c) = harness();
+    ok(&mut h, &c, "ui.set", json!({ "key": "language", "value": "uk" }));
+    ok(&mut h, &c, "ui.command", json!({ "id": "app.preferences" }));
+    for label in ["Мова інтерфейсу", "Українська"] {
+        let found = ok(&mut h, &c, "ui.inspect", json!({ "query": label }));
+        assert!(found["count"].as_u64().unwrap() > 0, "{label}: {found}");
+    }
+    ok(&mut h, &c, "ui.click", json!({ "label": "OK" }));
+    for query in ["Розділити", "Split document", "page.split"] {
+        ok(&mut h, &c, "ui.command", json!({ "id": "view.palette" }));
+        ok(&mut h, &c, "ui.type", json!({ "text": query }));
+        let hits = ok(&mut h, &c, "ui.inspect", json!({ "query": "Розділити документ…" }));
+        assert!(hits["count"].as_u64().unwrap() > 0, "{query}: {hits}");
+        ok(&mut h, &c, "ui.key", json!({ "key": "Escape" }));
+        h.state_mut().palette_query.clear();
+    }
+    for (dialog, label) in [("properties", "Властивості документа"), ("protect", "Захистити паролем"), ("about", "Учасники")]
+    {
+        ok(&mut h, &c, "ui.set", json!({ "key": "dialog", "value": dialog }));
+        let found = ok(&mut h, &c, "ui.inspect", json!({ "query": label }));
+        assert!(found["count"].as_u64().unwrap() > 0, "{dialog}: {found}");
+    }
+    ok(&mut h, &c, "ui.set", json!({ "key": "dialog", "value": "none" }));
+    assert!(!h.state_mut().apply_edit(pdfcraft_engine::Edit::DeletePages { pages: vec![0, 1, 2, 3, 4] }));
+    let state = ok(&mut h, &c, "ui.state", json!({}));
+    assert_eq!(state["language"], "uk");
+    assert_eq!(state["notice"], "Помилка «Видалити сторінки»: a document must keep at least one page");
+    assert_eq!(state["documents"][0]["name"], "doc.pdf");
+}
+
+#[test]
 fn preferences_menu_and_shortcut_allow_switching_interface_languages() {
     let (mut h, c) = harness();
     ok(&mut h, &c, "ui.set", json!({ "key": "language", "value": "ja" }));
@@ -542,7 +574,8 @@ fn preferences_menu_and_shortcut_allow_switching_interface_languages() {
     let menu = ok(&mut h, &c, "ui.inspect", json!({ "query": "環境設定…" }));
     let prefs = menu["widgets"].as_array().unwrap().iter().find(|w| w["clickable"] == true).expect("Preferences menu item");
     ok(&mut h, &c, "ui.click", json!({ "id": prefs["id"] }));
-    for (current, next, code) in [("日本語", "English", "en"), ("English", "日本語", "ja")] {
+    for (current, next, code) in [("日本語", "English", "en"), ("English", "Українська", "uk"), ("Українська", "日本語", "ja")]
+    {
         let selector = ok(&mut h, &c, "ui.inspect", json!({ "query": current }));
         let combo = selector["widgets"].as_array().unwrap().iter().find(|w| w["role"] == "ComboBox").expect("language selector");
         ok(&mut h, &c, "ui.click", json!({ "id": combo["id"] }));

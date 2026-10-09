@@ -576,6 +576,7 @@
 	Bottom:	Unten:
 	Width:	Breite:
 	Height:	Höhe:
+	Rotation:	Drehung:
 	Points from the page's bottom-left corner.	Punkte ab der unteren linken Ecke der Seite.
 	Alignment:	Ausrichtung:
 	Default Value:	Standardwert:
@@ -895,6 +896,7 @@
 	This comment's appearance can't be changed yet.	Die Darstellung dieses Kommentars kann noch nicht geändert werden.
 	Icon	Symbol
 	Thickness	Stärke
+	Line ending	Linienende
 	Modified	Geändert
 	No status has been set.	Es wurde kein Status festgelegt.
 	Compare Files	Dateien vergleichen
@@ -2084,3 +2086,4 @@ action wizard	Start	Starten
 	Clear Recent Files	Liste „Zuletzt geöffnet“ leeren
 	Remove from Recent	Aus „Zuletzt geöffnet“ entfernen
 	Remove {name} from Recent	{name} aus „Zuletzt geöffnet“ entfernen
+	The standard fonts can't draw “{c}” ({code}). Only Western European characters can be added as text for now.	Die Standardschriften können „{c}“ ({code}) nicht darstellen. Derzeit lassen sich nur westeuropäische Zeichen als Text hinzufügen.

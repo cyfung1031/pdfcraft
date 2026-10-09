@@ -429,6 +429,10 @@ impl DocView {
         self.current = self.current.min(last);
         self.page_input = (self.current + 1).to_string();
         self.selected.retain(|p| *p <= last);
+        // Text being typed on a page that no longer exists goes with the page.
+        if self.content.draft.as_ref().is_some_and(|d| d.page > last || self.page_count == 0) {
+            self.content.draft = None;
+        }
         if self.select_anchor.is_some_and(|a| a > last) {
             self.select_anchor = None;
         }

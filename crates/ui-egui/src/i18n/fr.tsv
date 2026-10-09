@@ -576,6 +576,7 @@
 	Bottom:	Bas :
 	Width:	Largeur :
 	Height:	Hauteur :
+	Rotation:	Rotation :
 	Points from the page's bottom-left corner.	Points depuis le coin inférieur gauche de la page.
 	Alignment:	Alignement :
 	Default Value:	Valeur par défaut :
@@ -894,6 +895,7 @@
 	This comment's appearance can't be changed yet.	L'apparence de ce commentaire ne peut pas encore être modifiée.
 	Icon	Icône
 	Thickness	Épaisseur
+	Line ending	Extrémité de ligne
 	Modified	Modifié
 	No status has been set.	Aucun état n'a été défini.
 	Compare Files	Comparer des fichiers
@@ -2037,3 +2039,4 @@
 	Pinned {folder} to Home	{folder} épinglé à l'Accueil
 	No recent files	Aucun fichier récent
 	Go to page…	Aller à la page…
+	The standard fonts can't draw “{c}” ({code}). Only Western European characters can be added as text for now.	Les polices standard ne peuvent pas afficher « {c} » ({code}). Pour l'instant, seuls les caractères d'Europe occidentale peuvent être ajoutés comme texte.
