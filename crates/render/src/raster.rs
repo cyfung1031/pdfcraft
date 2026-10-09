@@ -17,6 +17,7 @@ use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_interpret::font::{FontData, FontQuery};
 use hayro::hayro_interpret::hayro_cmap::CidFamily;
 use hayro::hayro_syntax::Pdf;
+use hayro::vello_cpu::Pixmap;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{RenderCache, RenderSettings, render};
 
@@ -216,13 +217,20 @@ fn render_page<'a>(pdf: &'a Pdf, cache: &RenderCache<'a>, settings: &Interpreter
             }
         };
         let pixmap = render(page, cache, settings, &rs);
-        Ok((pixmap.width() as u32, pixmap.height() as u32, pixmap.data_as_u8_slice().to_vec(), None))
+        Ok((pixmap.width() as u32, pixmap.height() as u32, into_bytes(pixmap), None))
     }));
     match result {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(e)) => Err((e, false)),
         Err(panic) => Err((format!("renderer crashed on page {}: {}", req.page + 1, panic_message(&panic)), true)),
     }
+}
+
+/// The pixmap's premultiplied RGBA bytes, moved out rather than copied (a page raster can be
+/// hundreds of megabytes). Four one-byte channels always recast to bytes in place; the copy is
+/// only there because the cast's signature allows failure.
+fn into_bytes(pixmap: Pixmap) -> Vec<u8> {
+    bytemuck::allocation::try_cast_vec(pixmap.take()).unwrap_or_else(|(_, pixels)| pixels.iter().flat_map(|p| [p.r, p.g, p.b, p.a]).collect())
 }
 
 fn finish(req: RenderRequest, start: Stopwatch, r: Result<Output, (String, bool)>) -> RenderedPage {
@@ -602,6 +610,18 @@ trailer << /Root 1 0 R >>
         let px = |x: u32, y: u32| &page.rgba[((y * page.width + x) * 4) as usize..][..4];
         assert_eq!(px(20, 30), &[0, 0, 255, 255]);
         assert_eq!(px(80, 5), &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn rendered_pixels_are_moved_out_of_the_pixmap() {
+        let mut pixmap = Pixmap::new(3, 2);
+        for (i, b) in pixmap.data_as_u8_slice_mut().iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let (at, expected) = (pixmap.data_as_u8_slice().as_ptr(), pixmap.data_as_u8_slice().to_vec());
+        let bytes = into_bytes(pixmap);
+        assert_eq!(bytes, expected);
+        assert_eq!(bytes.as_ptr(), at, "the pixmap's own buffer, not a copy");
     }
 
     #[test]
