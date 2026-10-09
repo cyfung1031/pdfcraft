@@ -287,6 +287,9 @@ struct Shared {
     /// Pages (and request kinds) the watchdog gave up on: answered with an error at once, so a
     /// pathological page cannot trap every worker in turn.
     stuck: Mutex<std::collections::HashSet<(usize, RequestKind)>>,
+    /// Set when the pool is dropped: the workers' renders stop at their next content operator,
+    /// since nobody can receive their answers any more.
+    dropped: Arc<std::sync::atomic::AtomicBool>,
     /// Test hook: make one page slow.
     #[cfg(test)]
     slow_page: Mutex<Option<(usize, std::time::Duration)>>,
@@ -378,7 +381,9 @@ impl RenderPool {
         let mut pool = Self::new(bytes.clone(), 0, config.clone());
         if pool.inline.is_none() {
             // Native `new` always spawns at least one worker; drop to inline explicitly.
-            pool = Self { shared: Arc::default(), wake: Mutex::new(Vec::new()), _workers: Mutex::new(Vec::new()), ..pool };
+            pool.shared = Arc::default();
+            pool.wake = Mutex::new(Vec::new());
+            pool._workers = Mutex::new(Vec::new());
             pool.inline = Some(std::cell::RefCell::new(PageRenderer::new(bytes, config)));
         }
         pool
@@ -457,9 +462,21 @@ impl RenderPool {
     }
 }
 
+impl Drop for RenderPool {
+    fn drop(&mut self) {
+        self.shared.dropped.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A worker's interpreter settings: the document's, stopping once the pool is dropped.
+#[cfg(not(target_arch = "wasm32"))]
+fn worker_settings(config: &RenderConfig, shared: &Shared) -> InterpreterSettings {
+    InterpreterSettings { cancelled: Some(shared.dropped.clone()), ..config.settings() }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn worker(id: usize, bytes: Arc<Vec<u8>>, config: RenderConfig, shared: Arc<Shared>, wake: Receiver<()>, out: Sender<RenderedPage>) {
-    let settings = config.settings();
+    let settings = worker_settings(&config, &shared);
     // Outer loop: (re)build parser + cache; rebuilt after a renderer panic.
     loop {
         let pdf = parse(&bytes, config.password.as_deref());
@@ -991,6 +1008,38 @@ trailer << /Root 1 0 R >>
         assert_eq!(pool.try_recv().map(|p| p.request.tag), Some(1));
         assert_eq!(pool.try_recv().map(|p| (p.request.tag, p.width)), Some((2, 50)));
         assert!(pool.try_recv().is_none());
+    }
+
+    #[test]
+    fn dropping_the_pool_cancels_its_renders() {
+        const TEXT: &[u8] = b"%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length 35 >> stream
+BT /F1 12 Tf 20 70 Td (Hello) Tj ET
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+        let pool = RenderPool::new(Arc::new(ONE_PAGE.to_vec()), 1, RenderConfig::default());
+        let settings = worker_settings(&pool.config, &pool.shared);
+        let flag = settings.cancelled.clone().expect("workers can be cancelled");
+        assert!(Arc::ptr_eq(&flag, &pool.shared.dropped));
+        let shapes = Pdf::new(Arc::new(ONE_PAGE.to_vec())).expect("parses");
+        let text = Pdf::new(Arc::new(TEXT.to_vec())).expect("parses");
+        let pages = shapes.pages();
+        let page = pages.first().expect("a page");
+        let rs = RenderSettings { bg_color: WHITE, ..Default::default() };
+        let blue = |s: &InterpreterSettings| {
+            let p = render(page, &RenderCache::new(), s, &rs).sample(20, 30);
+            [p.r, p.g, p.b, p.a] == [0, 0, 255, 255]
+        };
+        let glyphs = |s: &InterpreterSettings| crate::text::extract_page(&text, 0, s).map_or(0, |t| t.glyphs.len());
+        assert!(blue(&settings) && glyphs(&settings) == 5, "a live pool renders and reads everything");
+        drop(pool);
+        assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!blue(&settings) && glyphs(&settings) == 0, "once the pool is gone, interpretation stops before drawing");
     }
 
     #[test]
