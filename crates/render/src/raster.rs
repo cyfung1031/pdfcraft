@@ -281,6 +281,11 @@ pub const STUCK_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 struct Shared {
     /// Pending requests, most urgent last (workers pop from the end).
     queue: Mutex<Vec<RenderRequest>>,
+    /// Requests a worker has taken whose answer `try_recv` has not handed out yet. Callers keep
+    /// listing the requests they're still waiting for in each new queue, so a queued request
+    /// equal to one of these is dropped instead of being rendered a second time. Lock `queue`
+    /// first when holding both.
+    taken: Mutex<Vec<RenderRequest>>,
     /// Per worker id: the request it is rendering and since when.
     #[cfg(not(target_arch = "wasm32"))]
     busy: Mutex<Vec<Option<(RenderRequest, std::time::Instant)>>>,
@@ -294,6 +299,26 @@ struct Shared {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Whether two requests ask for the same answer (the scale compared bit for bit, so that a NaN
+/// request still matches itself and leaves `taken` when answered).
+fn same(a: &RenderRequest, b: &RenderRequest) -> bool {
+    (a.page, a.kind, a.tile, a.scale.to_bits(), a.tag) == (b.page, b.kind, b.tile, b.scale.to_bits(), b.tag)
+}
+
+/// Pop the most urgent queued request that isn't already taken, and mark it taken.
+#[cfg(not(target_arch = "wasm32"))]
+fn take_next(shared: &Shared) -> Option<RenderRequest> {
+    let mut queue = lock(&shared.queue);
+    let mut taken = lock(&shared.taken);
+    while let Some(req) = queue.pop() {
+        if !taken.iter().any(|t| same(t, &req)) {
+            taken.push(req);
+            return Some(req);
+        }
+    }
+    None
 }
 
 /// Renders pages on worker threads, most urgent request first.
@@ -394,7 +419,9 @@ impl RenderPool {
         self.stuck_after = limit;
     }
 
-    /// Replace the pending queue (most urgent first). In-flight renders are not interrupted.
+    /// Replace the pending queue (most urgent first). In-flight renders are not interrupted, and a
+    /// request equal to one already taken (rendering, or answered but not yet received through
+    /// `try_recv`) is skipped rather than rendered twice.
     pub fn set_queue(&self, mut requests: Vec<RenderRequest>) {
         requests.reverse(); // workers pop from the end
         *lock(&self.shared.queue) = requests;
@@ -409,10 +436,15 @@ impl RenderPool {
             return next.map(|req| r.borrow_mut().render(req));
         }
         self.watchdog();
-        if let Some(p) = lock(&self.abandoned).pop() {
-            return Some(p);
+        let page = lock(&self.abandoned).pop().or_else(|| self.results.try_recv().ok())?;
+        // Copies of the request queued while it rendered are answered too.
+        let mut queue = lock(&self.shared.queue);
+        queue.retain(|q| !same(q, &page.request));
+        let mut taken = lock(&self.shared.taken);
+        if let Some(i) = taken.iter().position(|t| same(t, &page.request)) {
+            taken.swap_remove(i);
         }
-        self.results.try_recv().ok()
+        Some(page)
     }
 
     /// Give up on renders that exceeded `stuck_after` (see the type docs).
@@ -465,7 +497,7 @@ fn worker(id: usize, bytes: Arc<Vec<u8>>, config: RenderConfig, shared: Arc<Shar
         let pdf = parse(&bytes, config.password.as_deref());
         let cache = RenderCache::new();
         loop {
-            let next = lock(&shared.queue).pop();
+            let next = take_next(&shared);
             let Some(req) = next else {
                 if wake.recv().is_err() {
                     return; // pool dropped
@@ -550,6 +582,79 @@ mod tests {
         // The stuck worker's late result is dropped, not delivered twice.
         std::thread::sleep(std::time::Duration::from_millis(4200));
         assert!(pool.try_recv().is_none());
+    }
+
+    #[test]
+    fn a_request_being_rendered_is_not_rendered_again() {
+        use super::*;
+        let pool = RenderPool::new(Arc::new(ONE_PAGE_TWICE.to_vec()), 2, RenderConfig::default());
+        *lock(&pool.shared.slow_page) = Some((0, std::time::Duration::from_millis(1000)));
+        let req = |page| RenderRequest { page, kind: RequestKind::Pixels, tile: None, scale: 0.5, tag: 0 };
+        pool.set_queue(vec![req(0)]);
+        let t = std::time::Instant::now();
+        while !lock(&pool.shared.busy).iter().flatten().any(|(r, _)| r.page == 0) {
+            assert!(t.elapsed() < std::time::Duration::from_secs(8), "page 1 never started");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // What the canvas sends next: the page it is still waiting for, then another one.
+        pool.set_queue(vec![req(0), req(1)]);
+        let mut answers = Vec::new();
+        let t = std::time::Instant::now();
+        while answers.len() < 2 || lock(&pool.shared.busy).iter().any(Option::is_some) {
+            assert!(t.elapsed() < std::time::Duration::from_secs(8), "answers so far: {answers:?}");
+            if let Some(p) = pool.try_recv() {
+                assert!(p.error.is_none(), "{:?}", p.error);
+                answers.push(p.request.page);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        while let Some(p) = pool.try_recv() {
+            answers.push(p.request.page);
+        }
+        // Page 2 went to the idle worker instead of waiting behind a second copy of page 1.
+        assert_eq!(answers, vec![1, 0]);
+        assert!(lock(&pool.shared.taken).is_empty());
+    }
+
+    #[test]
+    fn re_sent_queues_render_each_page_once() {
+        use super::*;
+        let pages = 12;
+        let mut pdf = format!(
+            "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [{}] /Count {pages} /MediaBox [0 0 200 200] >> endobj\n",
+            (0..pages).map(|i| format!("{} 0 R", 4 + i)).collect::<Vec<_>>().join(" ")
+        );
+        let body: String = (0..3000).map(|k| format!("{} {} 5 5 re f\n", k * 7 % 195, k * 13 % 195)).collect();
+        pdf += &format!("3 0 obj << /Length {} >> stream\n{body}endstream endobj\n", body.len());
+        for i in 0..pages {
+            pdf += &format!("{} 0 obj << /Type /Page /Parent 2 0 R /Contents 3 0 R >> endobj\n", 4 + i);
+        }
+        pdf += "trailer << /Root 1 0 R >>\n%%EOF";
+        let pool = RenderPool::new(Arc::new(pdf.into_bytes()), 3, RenderConfig::default());
+        let wanted: Vec<RenderRequest> =
+            (0..pages).map(|page| RenderRequest { page, kind: RequestKind::Pixels, tile: None, scale: 2.0, tag: 2000 }).collect();
+        // The canvas's loop: take what arrived, then queue every page still missing whenever
+        // that list changes (requests already rendering included).
+        let mut got = vec![0; pages];
+        let mut last = Vec::new();
+        let t = std::time::Instant::now();
+        while got.contains(&0) || lock(&pool.shared.busy).iter().any(Option::is_some) {
+            assert!(t.elapsed() < std::time::Duration::from_secs(30), "rendered so far: {got:?}");
+            while let Some(p) = pool.try_recv() {
+                assert!(p.error.is_none(), "{:?}", p.error);
+                got[p.request.page] += 1;
+            }
+            let queue: Vec<RenderRequest> = wanted.iter().copied().filter(|r| got[r.page] == 0).collect();
+            if queue != last {
+                pool.set_queue(queue.clone());
+                last = queue;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        while let Some(p) = pool.try_recv() {
+            got[p.request.page] += 1;
+        }
+        assert_eq!(got, vec![1; pages]);
     }
 
     #[test]
