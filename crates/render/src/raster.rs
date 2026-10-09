@@ -758,6 +758,20 @@ trailer << /Root 1 0 R >>
     }
 
     #[test]
+    fn render_into_a_buffer_of_the_wrong_length_leaves_it_untouched() {
+        let pdf = Pdf::new(Arc::new(ONE_PAGE.to_vec())).expect("parses");
+        let pages = pdf.pages();
+        let page = pages.first().expect("a page");
+        let rs = RenderSettings { width: Some(10), height: Some(10), bg_color: WHITE, ..Default::default() };
+        let settings = RenderConfig::default().settings();
+        for len in [0, 399, 401, 4000] {
+            let mut buf = vec![7u8; len];
+            render_into(page, &RenderCache::new(), &settings, &rs, &mut buf);
+            assert!(buf.iter().all(|&b| b == 7), "a {len}-byte buffer was written");
+        }
+    }
+
+    #[test]
     fn missing_page_and_garbage_input_fail_gracefully() {
         let mut r = PageRenderer::new(Arc::new(ONE_PAGE.to_vec()), RenderConfig::default());
         assert!(r.render(RenderRequest { page: 9, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 }).error.is_some());
