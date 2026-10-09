@@ -71,7 +71,7 @@ use crate::event::{
 use crate::event_loop::{ActiveEventLoop as RootAEL, ControlFlow, DeviceEvents, EventLoopClosed};
 use crate::keyboard::ModifiersState;
 use crate::platform::pump_events::PumpStatus;
-use crate::platform_impl::platform::dark_mode::try_theme;
+use crate::platform_impl::platform::dark_mode::{try_theme, WIN10_BUILD_VERSION};
 use crate::platform_impl::platform::dpi::{become_dpi_aware, dpi_to_scale_factor};
 use crate::platform_impl::platform::drop_handler::FileDropHandler;
 use crate::platform_impl::platform::icon::WinCursor;
@@ -2306,7 +2306,15 @@ unsafe fn public_window_callback_inner(
             }
 
             let new_outer_rect: RECT;
-            {
+            // PdfCraft patch: from Windows 11 (build 22000) on, apply the rect Windows suggests, as
+            // winit master does since 488c036a (rust-windowing/winit#4341). The adjustment below
+            // asks `MonitorFromWindow`, which during a drag still answers with the monitor being
+            // left: it nudges the window back onto that monitor, which sends another WM_DPICHANGED,
+            // and the window grows and stays on the wrong monitor at the wrong scale
+            // (rust-windowing/winit#4041, #4600; storytold/pdfcraft#324).
+            if !WIN10_BUILD_VERSION.is_some_and(|build| build < 22000) {
+                new_outer_rect = suggested_rect;
+            } else {
                 let suggested_ul =
                     (suggested_rect.left + margin_left, suggested_rect.top + margin_top);
 

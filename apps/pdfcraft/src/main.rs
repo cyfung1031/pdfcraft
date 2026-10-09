@@ -423,6 +423,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn winit_carries_the_windows_11_monitor_scale_fix() {
+        // Issue #324: winit 0.30.13 as released nudges a window dragged onto a monitor with another
+        // scale factor back onto the one it is leaving, so on Windows 11 it ends up on the wrong
+        // monitor, at the wrong size and scale. vendor/winit carries the fix from winit master. A
+        // dependency bump that resolves winit from crates.io again, or a re-vendored copy without
+        // the patch, would silently bring the bug back: re-apply the patch, or drop the copy once a
+        // winit 0.30 release has the fix (vendor/README.md).
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let lock = std::fs::read_to_string(root.join("Cargo.lock")).unwrap();
+        let winit = lock.split("[[package]]").find(|p| p.contains("\nname = \"winit\"\n")).expect("winit is in Cargo.lock");
+        assert!(!winit.contains("\nsource = "), "winit must resolve to vendor/winit, not:{winit}");
+        let dpi_changed = std::fs::read_to_string(root.join("vendor/winit/src/platform_impl/windows/event_loop.rs")).unwrap();
+        let patch = "if !WIN10_BUILD_VERSION.is_some_and(|build| build < 22000) {\n                new_outer_rect = suggested_rect;";
+        assert!(dpi_changed.contains(patch), "vendor/winit lost its WM_DPICHANGED patch");
+    }
+
     const NVIDIA: (u32, u32) = (0x10de, 0x2684);
     const AMD_IGPU: (u32, u32) = (0x1002, 0x164e);
 
