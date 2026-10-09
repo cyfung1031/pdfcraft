@@ -3469,6 +3469,62 @@ trailer << /Root 1 0 R >>
         }
     }
 
+    /// Adobe-Japan1 maps the JIS X 0208 forms of the kanji that JIS X 0213:2004 redrew (噂, 逢,
+    /// 溢, …) to a variation sequence: CID 1247 is 噂 U+E0100. A non-embedded Japanese font drew
+    /// such a CID as an unrelated glyph, since the substitute has no glyph for a sequence. It
+    /// draws the substitute's glyph for that form now, and its 噂 for a form it doesn't have.
+    #[test]
+    fn variation_sequences_draw_their_kanji_in_a_substitute() {
+        if pdfcraft_fonts::document_japanese_font().is_none() {
+            eprintln!("built without craft-fonts (CRAFT_FONTS_DIR unset): no Japanese face to check");
+            return;
+        }
+        let render = |base_font: &str, encoding: &str, to_unicode: &str, code: &str| {
+            let content = format!("BT /F1 40 Tf 5 15 Td <{code}> Tj ET");
+            let cmap = format!(
+                "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /Test def /CMapType 2 def 1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfchar <0001> <{to_unicode}> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end"
+            );
+            // Code <0001> through `/ToUnicode` when the encoding is Identity-H; otherwise no
+            // `/ToUnicode`, so the CID goes through Adobe-Japan1-UCS2.
+            let to_unicode = if encoding == "Identity-H" { "/ToUnicode 8 0 R" } else { "" };
+            let pdf = format!(
+                "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 60 60] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type0 /BaseFont /{base_font} /Encoding /{encoding} /DescendantFonts [6 0 R] {to_unicode} >> endobj
+6 0 obj << /Type /Font /Subtype /CIDFontType0 /BaseFont /{base_font} /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >>
+  /FontDescriptor 7 0 R /DW 1000 >> endobj
+7 0 obj << /Type /FontDescriptor /FontName /{base_font} /Flags 6 /FontBBox [0 -141 1000 859] /ItalicAngle 0 /Ascent 859 /Descent -141 /CapHeight 700 /StemV 80 >> endobj
+8 0 obj << /Length {} >> stream
+{cmap}
+endstream endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+                content.len(),
+                cmap.len()
+            );
+            let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+            assert!(p.error.is_none(), "{base_font} <{code}>: {:?}", p.error);
+            p.rgba
+        };
+        let inked = |rgba: &[u8]| rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count();
+        for base_font in ["HeiseiMin-W3", "HeiseiKakuGo-W5"] {
+            let collection = render(base_font, "UniJIS-UCS2-H", "", "5642");
+            let form = render(base_font, "Identity-H", "5642DB40DD00", "0001");
+            let character = render(base_font, "Identity-H", "5642", "0001");
+            let unknown_form = render(base_font, "Identity-H", "5642DB40DD05", "0001");
+            assert!(inked(&form) > 300, "{base_font}: 噂 U+E0100 is drawn ({} dark pixels)", inked(&form));
+            assert!(collection == form, "{base_font}: CID 1247 draws 噂 U+E0100");
+            assert!(form != character, "{base_font}: the form differs from the face's default 噂");
+            assert!(unknown_form == character, "{base_font}: a form the face lacks draws its 噂");
+        }
+    }
+
     /// An alpha soft mask whose transparency group has no /CS (as Chrome writes gradient text)
     /// must still mask. Regression test for the vendored hayro-interpret patch.
     #[test]
