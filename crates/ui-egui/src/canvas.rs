@@ -876,7 +876,7 @@ impl DocView {
                 self.errors.insert(r.request.page, e);
                 continue;
             }
-            let img = egui::ColorImage::from_rgba_premultiplied([r.width as usize, r.height as usize], &r.rgba);
+            let img = texture_image([r.width as usize, r.height as usize], r.rgba);
             let page = r.request.page;
             if let Some(t) = r.request.tile {
                 let tex = ctx.load_texture(format!("tile-{:?}-{page}-{}-{}", self.id, t.x, t.y), img, TextureOptions::LINEAR);
@@ -2932,9 +2932,41 @@ fn organize_grid(
     }
 }
 
+/// A rendered raster as texture data. Its words are premultiplied RGBA bytes, exactly
+/// `Color32`s, so the renderer's buffer becomes the image without a copy on the UI thread.
+fn texture_image(size: [usize; 2], pixels: pdfcraft_render::Pixels) -> egui::ColorImage {
+    match bytemuck::allocation::try_cast_vec::<u32, Color32>(pixels.into_words()) {
+        Ok(px) if px.len() == size[0].saturating_mul(size[1]) => egui::ColorImage::new(size, px),
+        Ok(px) => egui::ColorImage::from_rgba_premultiplied(size, bytemuck::cast_slice(&px)),
+        Err((_, words)) => egui::ColorImage::from_rgba_premultiplied(size, bytemuck::cast_slice(&words)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rendered_rasters_become_texture_images_without_a_copy() {
+        let pdf = b"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 50] /Contents 4 0 R >> endobj
+4 0 obj << /Length 35 >> stream
+0 0 1 rg 10 10 30 20 re f
+endstream endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+        let mut r = pdfcraft_render::PageRenderer::new(Arc::new(pdf.to_vec()), Default::default());
+        let out = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.5, tag: 0 });
+        assert!(out.error.is_none(), "{:?}", out.error);
+        let size = [out.width as usize, out.height as usize];
+        let copied = egui::ColorImage::from_rgba_premultiplied(size, &out.rgba);
+        let at = out.rgba.as_ptr();
+        let img = texture_image(size, out.rgba);
+        assert_eq!(img, copied);
+        assert_eq!(img.pixels.as_ptr().cast::<u8>(), at, "the renderer's own buffer");
+    }
 
     fn view(pages: usize, layout: PageLayout) -> DocView {
         let info = pdfcraft_render::DocInfo {
