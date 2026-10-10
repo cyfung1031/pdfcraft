@@ -2545,6 +2545,50 @@ trailer << /Root 1 0 R >>
         assert_eq!(&red.rgba[((20 * 40 + 20) * 4)..][..4], &[255, 0, 0, 255], "a normal tiling pattern still paints");
     }
 
+    #[test]
+    fn tiling_pattern_form_cycles_are_bounded_and_finite_nesting_paints() {
+        let cases = [
+            ("self-cycle", "/Pattern cs /P1 scn 0 0 10 10 re f 0 0 1 rg 0 0 10 10 re f"),
+            ("pattern-form-cycle", "/F Do 0 0 1 rg 0 0 10 10 re f"),
+            ("finite-nesting", "/Pattern cs /P2 scn 0 0 10 10 re f"),
+        ];
+        let pattern_b = "0 0 1 rg 0 0 10 10 re f";
+        let form = "/Pattern cs /P1 scn 0 0 10 10 re f";
+        let page_content = "/Pattern cs /P1 scn 0 0 40 40 re f 1 0 0 rg 32 32 8 8 re f";
+        for (case, pattern_a) in cases {
+            let pdf = format!(
+                "%PDF-1.7\n\
+                 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+                 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 40 40] >> endobj\n\
+                 3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Pattern << /P1 5 0 R /P2 6 0 R >> /XObject << /F 7 0 R >> >> >> endobj\n\
+                 4 0 obj << /Length {} >> stream\n{page_content}\nendstream endobj\n\
+                 5 0 obj << /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Length {} >> stream\n{pattern_a}\nendstream endobj\n\
+                 6 0 obj << /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Length {} >> stream\n{pattern_b}\nendstream endobj\n\
+                 7 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Length {} >> stream\n{form}\nendstream endobj\n\
+                 trailer << /Root 1 0 R >>\n%%EOF",
+                page_content.len(),
+                pattern_a.len(),
+                pattern_b.len(),
+                form.len()
+            )
+            .into_bytes();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut renderer = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+                let _ = tx.send(renderer.render(RenderRequest { page: 0, scale: 1.0, ..Default::default() }));
+            });
+            let page = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| panic!("{case}: render did not finish"));
+            assert!(page.error.is_none(), "{case}: {:?}", page.error);
+            assert_eq!((page.width, page.height), (40, 40), "{case}");
+            let pixel = |x: u32, y: u32| {
+                let offset = ((y * page.width + x) * 4) as usize;
+                [page.rgba[offset], page.rgba[offset + 1], page.rgba[offset + 2], page.rgba[offset + 3]]
+            };
+            assert_eq!(pixel(1, 38), [0, 0, 255, 255], "{case}: nested pattern content paints");
+            assert_eq!(pixel(35, 4), [255, 0, 0, 255], "{case}: page content after the pattern still paints");
+        }
+    }
+
     /// From `cargo xtask fuzz`: a Type 3 font without /Resources inherits the page's, where its
     /// own name is defined, and its glyph shows text in itself (vendored patch:
     /// `MAX_PAINT_NESTING`). Must terminate; a normal Type 3 glyph must still paint.
