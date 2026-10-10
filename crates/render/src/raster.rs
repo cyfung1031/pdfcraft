@@ -459,6 +459,14 @@ struct Busy {
     valid: Arc<AtomicBool>,
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[derive(Clone)]
+struct BusyPublishGate {
+    request: RenderRequest,
+    entered: std::sync::mpsc::Sender<()>,
+    release: Arc<Mutex<Receiver<()>>>,
+}
+
 /// State shared by the pool and its workers.
 #[derive(Default)]
 struct Shared {
@@ -489,6 +497,10 @@ struct Shared {
     slow_parse: Mutex<Option<std::time::Duration>>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
     render_started: std::sync::atomic::AtomicUsize,
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    busy_publish_gate: Mutex<Option<BusyPublishGate>>,
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    parser_stage_entries: Mutex<Vec<RenderRequest>>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
     shared_render_delay: Mutex<Option<std::time::Duration>>,
 }
@@ -895,6 +907,11 @@ fn worker(
                 if shared.queue.cancel_obsolete(req) {
                     continue;
                 }
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                if let Some(gate) = lock(&shared.busy_publish_gate).clone().filter(|gate| same_request(gate.request, req)) {
+                    let _ = gate.entered.send(());
+                    let _ = lock(&gate.release).recv();
+                }
                 let request_cancelled = Arc::new(AtomicBool::new(false));
                 let request_valid = Arc::new(AtomicBool::new(true));
                 if lock(&shared.stuck).contains(&req.into()) {
@@ -931,6 +948,14 @@ fn worker(
                         valid: request_valid.clone(),
                     });
                 }
+                if shared.queue.cancel_obsolete(req) {
+                    if lock(&shared.busy).get_mut(id).is_none_or(|slot| slot.take().is_none()) {
+                        return;
+                    }
+                    continue;
+                }
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                lock(&shared.parser_stage_entries).push(req);
                 let (pdf, cache, shared_generation) = parsed.get_or_init(|| {
                     let load = || {
                         #[cfg(test)]
@@ -1729,6 +1754,32 @@ mod tests {
             assert!(pool.try_recv().is_none(), "obsolete request produced a result");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn request_removed_before_busy_publication_skips_parser_acquisition() {
+        use std::{sync::mpsc, time::Duration};
+
+        let pool = RenderPool::new(Arc::new(ONE_PAGE_TWICE.to_vec()), 1, RenderConfig::default());
+        let a = RenderRequest { page: 0, scale: 0.5, tag: 201, ..Default::default() };
+        let b = RenderRequest { page: 1, scale: 0.5, tag: 202, ..Default::default() };
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *lock(&pool.shared.busy_publish_gate) = Some(BusyPublishGate { request: a, entered: entered_tx, release: Arc::new(Mutex::new(release_rx)) });
+
+        pool.set_queue(vec![a]);
+        entered_rx.recv_timeout(Duration::from_secs(2)).expect("request A passed its first obsolescence check");
+        assert!(!lock(&pool.shared.busy).iter().flatten().any(|busy| same_request(busy.request, a)));
+        pool.set_queue(vec![b]);
+        release_tx.send(()).unwrap();
+
+        let page = receive_before_deadline(&pool);
+        assert_eq!(page.request, b);
+        assert!(page.error.is_none(), "replacement request failed: {:?}", page.error);
+        assert_eq!(*lock(&pool.shared.parser_stage_entries), vec![b], "obsolete A must not enter parser acquisition");
+        assert_eq!(pool.shared.render_started.load(Ordering::Relaxed), 1, "only replacement B is rasterized");
+        assert!(pool.try_recv().is_none(), "obsolete request A did not publish a stale result");
     }
 
     #[test]
