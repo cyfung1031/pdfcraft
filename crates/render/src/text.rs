@@ -1051,6 +1051,9 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
     let mut space_before: Vec<bool> = Vec::with_capacity(n);
     let mut line = 0u32;
     let mut sc = Scratch::default();
+    // Each glyph's place in the output of its segment. Written for a segment before its word gaps are read, so it never
+    // needs clearing between segments.
+    let mut at = vec![0usize; n];
     for b in block_order {
         for &si in &blocks[b].0 {
             place_glyphs(&glyphs, &height, &segs[si], &mut sc);
@@ -1069,6 +1072,11 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
                 reverse_rtl(&glyphs, &mut sc.logical);
             }
             let idx: &[usize] = if has_rtl { &sc.logical } else { &sc.placed };
+            for (k, &g) in idx.iter().enumerate() {
+                if let Some(slot) = at.get_mut(g) {
+                    *slot = k;
+                }
+            }
             let out_start = order.len();
             order.extend_from_slice(idx);
             line_of.resize(order.len(), line);
@@ -1084,8 +1092,9 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
                     // Mark the space before glyph `c` wherever it ended up after RTL reversal. The first glyph of a
                     // segment never takes a space.
                     let mark = if run_start { c } else { c.max(p) };
-                    if let Some(slot) =
-                        idx.iter().position(|x| *x == mark).filter(|&pos| pos > 0).and_then(|pos| space_before.get_mut(out_start + pos))
+                    if let Some(&pos) = at.get(mark)
+                        && pos > 0
+                        && let Some(slot) = space_before.get_mut(out_start + pos)
                     {
                         *slot = true;
                     }
@@ -1607,6 +1616,19 @@ mod tests {
         let t = layout(v);
         let expected: String = rows.join(" ");
         assert!(t.plain_text().starts_with(&expected), "{:?}", t.plain_text());
+    }
+
+    #[test]
+    fn a_long_line_keeps_every_word_gap() {
+        // 1500 five-letter words on one line, a word gap after each: every gap is found, and only those.
+        let mut v = Vec::new();
+        let mut words = Vec::new();
+        for w in 0..1500 {
+            let text: String = (0..5).map(|i| char::from(b'a' + ((w * 7 + i * 3) % 26) as u8)).collect();
+            word(&mut v, &text, 10.0 + w as f32 * 36.0, 10.0, 6.0);
+            words.push(text);
+        }
+        assert_eq!(layout(v).plain_text(), words.join(" "));
     }
 
     #[test]
