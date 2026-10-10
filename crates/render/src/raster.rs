@@ -353,8 +353,13 @@ fn warning_settings(settings: &InterpreterSettings, warnings: Arc<Mutex<Vec<Rend
     let target = warnings;
     InterpreterSettings {
         warning_sink: Arc::new(move |warning| {
+            // Nested forms, Type 3 glyphs and patterns are interpreted again and each reports the
+            // exhausted budget: once per page is enough.
             if matches!(warning, InterpreterWarning::ContentTruncated) {
-                lock(&target).push(RenderWarning::ContentTruncated);
+                let mut warnings = lock(&target);
+                if !warnings.contains(&RenderWarning::ContentTruncated) {
+                    warnings.push(RenderWarning::ContentTruncated);
+                }
             }
         }),
         ..settings.clone()
@@ -3228,6 +3233,11 @@ trailer << /Root 1 0 R >>
         let page = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("a self-painting form must not stall the renderer");
         assert!(page.error.is_none(), "{:?}", page.error);
         assert!(page.warnings.contains(&RenderWarning::ContentTruncated), "the skipped nested content is observable");
+        assert_eq!(
+            page.warnings.iter().filter(|w| **w == RenderWarning::ContentTruncated).count(),
+            1,
+            "reported once per page, not once per nested paint"
+        );
         assert_eq!(&page.rgba[((38 * 40 + 1) * 4)..][..4], &[255, 0, 0, 255], "the rest of the page draws");
     }
 

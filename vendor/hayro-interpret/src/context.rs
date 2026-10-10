@@ -34,6 +34,8 @@ pub(crate) const MAX_NESTED_PAINTS: u32 = 50_000;
 std::thread_local! {
     static NESTED_PAINTS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
     static CONTENT_LEFT: core::cell::Cell<usize> = const { core::cell::Cell::new(MAX_PAGE_CONTENT) };
+    // PdfCraft patch (18): whether this page's content budget ran out, reported as
+    // `InterpreterWarning::ContentTruncated`.
     static CONTENT_TRUNCATED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
@@ -89,6 +91,7 @@ pub(crate) fn charge_content(len: usize) {
     CONTENT_LEFT.with(|c| c.set(c.get().saturating_sub(len)));
 }
 
+/// PdfCraft patch (18): whether content was skipped because the page's budget ran out.
 pub(crate) fn content_was_truncated() -> bool {
     CONTENT_TRUNCATED.with(core::cell::Cell::get)
 }

@@ -148,7 +148,7 @@ pub enum InterpreterWarning {
     UnsupportedFont,
     /// An image failed to decode.
     ImageDecodeFailure,
-    /// A page content stream was skipped after exhausting its safety budget.
+    /// PdfCraft patch (18): a page content stream was skipped after exhausting its safety budget.
     ContentTruncated,
 }
 
@@ -846,6 +846,7 @@ pub fn interpret<'a>(
     while context.num_states() > num_states {
         context.restore_state(device);
     }
+    // PdfCraft patch (18): say that content was skipped, so a truncated page isn't a clean render.
     if crate::context::content_was_truncated() {
         (context.settings.warning_sink)(InterpreterWarning::ContentTruncated);
     }
