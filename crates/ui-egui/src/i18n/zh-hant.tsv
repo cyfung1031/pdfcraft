@@ -746,6 +746,7 @@
 	Dates	日期
 	Text in images isn't found; recognise text (OCR) first.	圖片中的文字無法找到；請先識別文字（OCR）。
 	No matches.	無匹配。
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	此處未顯示部分書籤：面板列出的書籤數量和巢狀深度有限。
 	{n} match(es) marked for redaction.	已標記 {n} 個匹配以待遮蔽內容。
 	Multiple words or phrases	多個單字或片語
 	One word or phrase per line	每行一個單字或片語

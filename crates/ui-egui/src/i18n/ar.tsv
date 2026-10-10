@@ -1098,6 +1098,7 @@
 	Dates	التواريخ
 	Text in images isn't found; recognise text (OCR) first.	النص داخل الصور لا يُعثر عليه؛ استخدم التعرف على النص (OCR) أولًا.
 	No matches.	لا توجد تطابقات.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	بعض الإشارات المرجعية غير معروضة هنا: تعرض اللوحة عددًا محدودًا منها، وبعمق تداخل محدود.
 	{n} match(es) marked for redaction.	عُلِّم {n} تطابق للحجب.
 	Multiple words or phrases	كلمات أو عبارات متعددة
 	One word or phrase per line	كلمة أو عبارة واحدة في كل سطر

@@ -1098,6 +1098,7 @@
 	Dates	日付
 	Text in images isn't found; recognise text (OCR) first.	画像内のテキストは検索できません。先に OCR でテキストを認識してください。
 	No matches.	一致する項目はありません。
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	一部のしおりはここに表示されません。パネルに表示できる数と階層の深さには上限があります。
 	{n} match(es) marked for redaction.	{n} 件の一致項目に墨消しマークを付けました。
 	Multiple words or phrases	複数の単語または語句
 	One word or phrase per line	1 行に 1 つの単語または語句

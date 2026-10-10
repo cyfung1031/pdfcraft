@@ -1096,6 +1096,7 @@
 	Dates	Дати
 	Text in images isn't found; recognise text (OCR) first.	Текст у зображеннях не знаходиться; спочатку розпізнайте текст (OCR).
 	No matches.	Збігів немає.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	Деякі закладки тут не показано: панель показує обмежену кількість закладок з обмеженою глибиною вкладення.
 	{n} match(es) marked for redaction.	Збігів, позначених для вилучення: {n}.
 	Multiple words or phrases	Кілька слів або фраз
 	One word or phrase per line	По одному слову або фразі в рядку
