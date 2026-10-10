@@ -956,41 +956,60 @@ fn worker(
                 }
                 #[cfg(all(test, not(target_arch = "wasm32")))]
                 lock(&shared.parser_stage_entries).push(req);
-                let (pdf, cache, shared_generation) = parsed.get_or_init(|| {
-                    let load = || {
-                        #[cfg(test)]
-                        {
-                            shared.parses.fetch_add(1, Ordering::Relaxed);
-                            let delay = *lock(&shared.slow_parse);
-                            if let Some(delay) = delay {
-                                std::thread::sleep(delay);
+                // A request cancelled while it waited for the parser must not leave its abort
+                // behind as this worker's parse: every later request would then fail as unparsable.
+                let aborted = || request_cancelled.load(Ordering::Acquire) || stop.load(Ordering::Acquire);
+                if parsed.get().is_none() {
+                    let init = {
+                        let load = || {
+                            #[cfg(test)]
+                            {
+                                shared.parses.fetch_add(1, Ordering::Relaxed);
+                                let delay = *lock(&shared.slow_parse);
+                                if let Some(delay) = delay {
+                                    std::thread::sleep(delay);
+                                }
+                            }
+                            shared.stats.parser_builds.fetch_add(1, Ordering::Relaxed);
+                            parse(&bytes, config.password.as_deref())
+                        };
+                        match shared.parser.acquire(load, || {
+                            request_cancelled.load(Ordering::Acquire)
+                                || stop.load(Ordering::Acquire)
+                                || matches!(wake.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected))
+                        }) {
+                            Some(pdf) => {
+                                let shared_generation = pdf.is_some();
+                                (pdf, RenderCache::new(), shared_generation)
+                            }
+                            None => {
+                                let pdf = if !request_cancelled.load(Ordering::Acquire)
+                                    && !stop.load(Ordering::Acquire)
+                                    && set_busy_stage(&shared, id, BusyStage::Parsing)
+                                {
+                                    load().map(Arc::new)
+                                } else {
+                                    None
+                                };
+                                (pdf, RenderCache::new(), false)
                             }
                         }
-                        shared.stats.parser_builds.fetch_add(1, Ordering::Relaxed);
-                        parse(&bytes, config.password.as_deref())
                     };
-                    match shared.parser.acquire(load, || {
-                        request_cancelled.load(Ordering::Acquire)
-                            || stop.load(Ordering::Acquire)
-                            || matches!(wake.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected))
-                    }) {
-                        Some(pdf) => {
-                            let shared_generation = pdf.is_some();
-                            (pdf, RenderCache::new(), shared_generation)
+                    if aborted() {
+                        if lock(&shared.busy).get_mut(id).is_none_or(|slot| slot.take().is_none()) {
+                            return;
                         }
-                        None => {
-                            let pdf = if !request_cancelled.load(Ordering::Acquire)
-                                && !stop.load(Ordering::Acquire)
-                                && set_busy_stage(&shared, id, BusyStage::Parsing)
-                            {
-                                load().map(Arc::new)
-                            } else {
-                                None
-                            };
-                            (pdf, RenderCache::new(), false)
-                        }
+                        continue;
                     }
-                });
+                    let _ = parsed.set(init);
+                }
+                // Set just above when it was empty.
+                let Some((pdf, cache, shared_generation)) = parsed.get() else {
+                    if lock(&shared.busy).get_mut(id).is_none_or(|slot| slot.take().is_none()) {
+                        return;
+                    }
+                    continue;
+                };
                 // Acquisition may have waited or parsed privately after shared
                 // fallback. Retire before any render work if the watchdog gave
                 // this request to a replacement while initialization ran.
@@ -1753,6 +1772,37 @@ mod tests {
         while Instant::now() < deadline {
             assert!(pool.try_recv().is_none(), "obsolete request produced a result");
             std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A request cancelled while its worker waited for the shared parse must not leave that
+    /// worker unable to render: the abort is not a parse result.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_request_cancelled_while_waiting_for_the_parse_leaves_its_worker_usable() {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        let pool = RenderPool::new(Arc::new(ONE_PAGE_TWICE.to_vec()), 2, RenderConfig::default());
+        *lock(&pool.shared.slow_parse) = Some(Duration::from_millis(500));
+        let a = RenderRequest { page: 0, scale: 0.5, tag: 301, ..Default::default() };
+        let c = RenderRequest { page: 1, scale: 0.5, tag: 302, ..Default::default() };
+        pool.set_queue(vec![a, c]);
+        let started = Instant::now();
+        while lock(&pool.shared.busy).iter().flatten().count() < 2 {
+            assert!(started.elapsed() < Duration::from_secs(2), "both requests never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        *lock(&pool.shared.slow_parse) = None;
+        for round in 0..4u64 {
+            let x = RenderRequest { page: 0, scale: 0.5, tag: 400 + 2 * round, ..Default::default() };
+            let y = RenderRequest { page: 1, scale: 0.5, tag: 401 + 2 * round, ..Default::default() };
+            pool.set_queue(vec![x, y]);
+            for _ in 0..2 {
+                let page = receive_before_deadline(&pool);
+                assert!(page.request == x || page.request == y, "round {round}: obsolete {:?}", page.request);
+                assert!(page.error.is_none(), "round {round}: {:?}", page.error);
+            }
         }
     }
 
