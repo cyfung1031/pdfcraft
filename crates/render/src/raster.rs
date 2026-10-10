@@ -1952,6 +1952,41 @@ trailer << /Root 1 0 R >>
     }
 
     #[test]
+    fn shared_form_xobject_uses_each_pages_resource_context() {
+        let form = "/CS1 cs 0.5 0.5 0.5 sc 10 10 30 30 re f";
+        let page_content = "/F Do";
+        let pdf = format!(
+            "%PDF-1.7\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 /MediaBox [0 0 50 50] >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /Resources << /XObject << /F 4 0 R >> /ColorSpace << /CS1 /DeviceRGB >> >> /Contents 5 0 R >> endobj\n\
+             4 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 50 50] /Length {} >> stream\n{form}\nendstream endobj\n\
+             5 0 obj << /Length {} >> stream\n{page_content}\nendstream endobj\n\
+             6 0 obj << /Type /Page /Parent 2 0 R /Resources << /XObject << /F 4 0 R >> /ColorSpace << /CS1 [/CalRGB << /WhitePoint [0.9505 1 1.089] /Gamma [2 2 2] /Matrix [1 0 0 0 1 0 0 0 1] >>] >> >> /Contents 7 0 R >> endobj\n\
+             7 0 obj << /Length {} >> stream\n{page_content}\nendstream endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+            form.len(),
+            page_content.len(),
+            page_content.len()
+        )
+        .into_bytes();
+        let mut renderer = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+        let first = renderer.render(RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+        let second = renderer.render(RenderRequest { page: 1, scale: 1.0, ..Default::default() });
+        assert!(first.error.is_none() && second.error.is_none(), "{:?} / {:?}", first.error, second.error);
+
+        let pixel = |page: &RenderedPage| {
+            let offset = ((20 * page.width + 20) * 4) as usize;
+            [page.rgba[offset], page.rgba[offset + 1], page.rgba[offset + 2], page.rgba[offset + 3]]
+        };
+        let first_pixel = pixel(&first);
+        let second_pixel = pixel(&second);
+        assert_ne!(first_pixel, second_pixel, "the same Form XObject must resolve /CS1 in each page's resources");
+        assert_ne!(first_pixel, [255, 255, 255, 255]);
+        assert_ne!(second_pixel, [255, 255, 255, 255]);
+    }
+
+    #[test]
     fn renders_a_blue_rectangle() {
         let pool = RenderPool::new(Arc::new(ONE_PAGE.to_vec()), 1, RenderConfig::default());
         pool.set_queue(vec![RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 7 }]);
