@@ -44,6 +44,7 @@ const TOKENS: &[&[u8]] = &[
     b" /BadName ",
     b" [1 2 (unterminated] ",
 ];
+const DENSE_PATH: &[u8] = b"0 0 m 1 1 l S ";
 
 #[derive(Clone)]
 struct Rng(u64);
@@ -177,8 +178,8 @@ pub fn run(args: &[String]) -> Result<()> {
 
     let mut seeds: Vec<Vec<u8>> = SEEDS.iter().map(|seed| seed.to_vec()).collect();
     let mut dense = Vec::with_capacity(MAX_CONTENT_BYTES);
-    while dense.len() + 14 <= MAX_CONTENT_BYTES {
-        dense.extend_from_slice(b"0 0 m 1 1 l S ");
+    while dense.len().saturating_add(DENSE_PATH.len()) <= MAX_CONTENT_BYTES {
+        dense.extend_from_slice(DENSE_PATH);
     }
     seeds.push(dense);
 
