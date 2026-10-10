@@ -145,6 +145,8 @@ struct Keys {
 enum Scope {
     /// Anything: re-inspect the whole document.
     Full,
+    /// Document-information entries; page content and appearances are unchanged.
+    Metadata,
     /// Only comments: re-read the comment list from the object graph.
     Comments,
     /// Only form field values (and their widget appearances).
@@ -162,6 +164,7 @@ fn uses_scripts(edit: &Edit) -> bool {
 
 fn scope_of(edit: &Edit) -> Scope {
     match edit {
+        Edit::SetInfo { .. } => Scope::Metadata,
         // A file attachment also changes the Attachments list.
         Edit::AddAnnotation(a) if matches!(a.shape, Shape::Attachment { .. }) => Scope::Full,
         Edit::AddMeasurement(_)
@@ -2466,9 +2469,8 @@ impl Session {
         }
     }
 
-    /// Rebuild the working bytes and renderer, and the view data that `scope` may have changed.
-    /// Comment and form edits skip the full re-inspection (seconds on very large files): the
-    /// comment list and field values are re-read from the object graph instead.
+    /// Rebuild the working bytes and the view data that `scope` may have changed.
+    /// Metadata edits retain the renderer; comment and form edits rebuild only their view data.
     fn refresh_scoped(doc: &mut Document, scope: Scope) -> Result<(), EditError> {
         if scope == Scope::Full || doc.info.encrypted != doc.editor.as_ref().is_some_and(|e| e.cos.output_handler().is_some()) {
             return Self::refresh(doc);
@@ -2479,10 +2481,25 @@ impl Session {
         } else {
             editor.cos.bytes().clone()
         };
+        if scope == Scope::Metadata {
+            doc.info.title = pdfcraft_organize::info(&editor.cos, "Title");
+            doc.info.author = pdfcraft_organize::info(&editor.cos, "Author");
+            doc.info.subject = pdfcraft_organize::info(&editor.cos, "Subject");
+            doc.info.keywords = pdfcraft_organize::info(&editor.cos, "Keywords");
+            doc.info.creator = pdfcraft_organize::info(&editor.cos, "Creator");
+            doc.info.producer = pdfcraft_organize::info(&editor.cos, "Producer");
+            doc.info.file_size = bytes.len();
+            if !doc.signatures.is_empty() {
+                doc.signatures = signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache);
+            }
+            doc.bytes = bytes;
+            return Ok(());
+        }
         let mut form = pdfcraft_forms::fields(&editor.cos);
         xfa::mark_script_buttons(&editor.cos, &mut form);
         let form = Arc::new(form);
         match scope {
+            Scope::Metadata => return Ok(()),
             Scope::Comments => doc.info.annotations = comment_list(&editor.cos),
             Scope::Form => {
                 for f in &mut doc.info.fields {
