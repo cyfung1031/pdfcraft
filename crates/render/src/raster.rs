@@ -10,7 +10,8 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -20,9 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use work_queue::{ResultReceiver, WorkQueue};
 
-use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_interpret::font::{FontData, FontQuery};
 use hayro::hayro_interpret::hayro_cmap::CidFamily;
+use hayro::hayro_interpret::{InterpreterSettings, InterpreterWarning};
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{RenderCache, RenderSettings, render_into, render_size};
@@ -57,6 +58,9 @@ pub struct RenderConfig {
     pub layers: Arc<Vec<(i32, i32, bool)>>,
     /// View ▸ Hide all comments: markup annotations aren't drawn (fields and links still are).
     pub hide_comments: bool,
+    /// Refuse a whole-page raster that would be reduced by the renderer's hard size caps.
+    /// Tiled requests remain available for pages that exceed those caps.
+    pub reject_oversize: bool,
 }
 
 impl RenderConfig {
@@ -154,6 +158,21 @@ pub struct RenderRequest {
     pub tag: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RequestFailureKey {
+    page: usize,
+    kind: RequestKind,
+    tile: Option<Tile>,
+    scale: u32,
+    tag: u64,
+}
+
+impl From<RenderRequest> for RequestFailureKey {
+    fn from(req: RenderRequest) -> Self {
+        Self { page: req.page, kind: req.kind, tile: req.tile, scale: req.scale.to_bits(), tag: req.tag }
+    }
+}
+
 #[derive(Debug)]
 pub struct RenderedPage {
     pub request: RenderRequest,
@@ -165,7 +184,72 @@ pub struct RenderedPage {
     pub error: Option<String>,
     /// For `RequestKind::Text`.
     pub text: Option<Arc<crate::text::PageText>>,
+    /// Non-fatal conditions that made the result partial or otherwise noteworthy.
+    pub warnings: Vec<RenderWarning>,
     pub millis: u32,
+}
+
+/// A non-fatal condition reported while interpreting a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderWarning {
+    /// Content was skipped after the per-page decoded-content budget was exhausted.
+    ContentTruncated,
+}
+
+/// Counters for work performed by a renderer or render pool.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderStats {
+    /// Number of parser construction attempts.
+    pub parser_builds: u64,
+    /// Number of pixel page interpretations, including tiled requests.
+    pub page_interpretations: u64,
+    /// Number of render requests accepted for processing.
+    pub render_requests: u64,
+    /// Number of requests that render only a tile.
+    pub tile_requests: u64,
+    /// Number of text-layer interpretations.
+    pub text_interpretations: u64,
+    /// Number of pixel rasterizations.
+    pub rasterizations: u64,
+}
+
+#[derive(Default)]
+struct AtomicRenderStats {
+    parser_builds: AtomicU64,
+    page_interpretations: AtomicU64,
+    render_requests: AtomicU64,
+    tile_requests: AtomicU64,
+    text_interpretations: AtomicU64,
+    rasterizations: AtomicU64,
+}
+
+impl AtomicRenderStats {
+    fn record_request(&self, req: RenderRequest) {
+        self.render_requests.fetch_add(1, Ordering::Relaxed);
+        if req.tile.is_some() {
+            self.tile_requests.fetch_add(1, Ordering::Relaxed);
+        }
+        match req.kind {
+            RequestKind::Pixels => {
+                self.page_interpretations.fetch_add(1, Ordering::Relaxed);
+                self.rasterizations.fetch_add(1, Ordering::Relaxed);
+            }
+            RequestKind::Text => {
+                self.text_interpretations.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn snapshot(&self) -> RenderStats {
+        RenderStats {
+            parser_builds: self.parser_builds.load(Ordering::Relaxed),
+            page_interpretations: self.page_interpretations.load(Ordering::Relaxed),
+            render_requests: self.render_requests.load(Ordering::Relaxed),
+            tile_requests: self.tile_requests.load(Ordering::Relaxed),
+            text_interpretations: self.text_interpretations.load(Ordering::Relaxed),
+            rasterizations: self.rasterizations.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Clamp a requested scale so the output respects `MAX_SIDE` and `MAX_PIXELS`.
@@ -192,7 +276,13 @@ pub fn device_pixels(pt: f32, scale: f32) -> u32 {
 /// and reported as `Err((message, panicked))`.
 type Output = (u32, u32, Pixels, Option<Arc<crate::text::PageText>>);
 
-fn render_page<'a>(pdf: &'a Pdf, cache: &RenderCache<'a>, settings: &InterpreterSettings, req: RenderRequest) -> Result<Output, (String, bool)> {
+fn render_page<'a>(
+    pdf: &'a Pdf,
+    cache: &RenderCache<'a>,
+    settings: &InterpreterSettings,
+    reject_oversize: bool,
+    req: RenderRequest,
+) -> Result<Output, (String, bool)> {
     if req.kind == RequestKind::Text {
         return match catch_unwind(AssertUnwindSafe(|| crate::text::extract_page(pdf, req.page, settings))) {
             Ok(Some(t)) => Ok((0, 0, Pixels::default(), Some(Arc::new(t)))),
@@ -224,6 +314,13 @@ fn render_page<'a>(pdf: &'a Pdf, cache: &RenderCache<'a>, settings: &Interpreter
             }
             None => {
                 let scale = effective_scale(w, h, req.scale);
+                if reject_oversize && (!(req.scale.is_finite() && req.scale > 0.0) || req.scale > scale) {
+                    return Err(format!(
+                        "requested page {} raster scale {req_scale} exceeds renderer limits (maximum scale {scale})",
+                        req.page + 1,
+                        req_scale = req.scale
+                    ));
+                }
                 // hayro floors the size when none is given, losing the partial edge pixels. The
                 // scale keeps each side within MAX_SIDE (give or take float noise), so it fits u16.
                 let side = |pt: f32| device_pixels(pt, scale).min(MAX_SIDE as u32) as u16;
@@ -243,12 +340,28 @@ fn render_page<'a>(pdf: &'a Pdf, cache: &RenderCache<'a>, settings: &Interpreter
     }
 }
 
-fn finish(req: RenderRequest, start: Stopwatch, r: Result<Output, (String, bool)>) -> RenderedPage {
+fn finish(req: RenderRequest, start: Stopwatch, r: Result<Output, (String, bool)>, warnings: Vec<RenderWarning>) -> RenderedPage {
     let millis = start.millis();
     match r {
-        Ok((width, height, rgba, text)) => RenderedPage { request: req, width, height, rgba, error: None, text, millis },
-        Err((e, _)) => RenderedPage { request: req, width: 0, height: 0, rgba: Pixels::default(), error: Some(e), text: None, millis },
+        Ok((width, height, rgba, text)) => RenderedPage { request: req, width, height, rgba, error: None, text, warnings, millis },
+        Err((e, _)) => RenderedPage { request: req, width: 0, height: 0, rgba: Pixels::default(), error: Some(e), text: None, warnings, millis },
     }
+}
+
+fn warning_settings(settings: &InterpreterSettings, warnings: Arc<Mutex<Vec<RenderWarning>>>) -> InterpreterSettings {
+    let target = warnings;
+    InterpreterSettings {
+        warning_sink: Arc::new(move |warning| {
+            if matches!(warning, InterpreterWarning::ContentTruncated) {
+                lock(&target).push(RenderWarning::ContentTruncated);
+            }
+        }),
+        ..settings.clone()
+    }
+}
+
+fn take_warnings(warnings: &Mutex<Vec<RenderWarning>>) -> Vec<RenderWarning> {
+    std::mem::take(&mut *lock(warnings))
 }
 
 /// A single-threaded renderer over one parsed document (used by the CLI and tests).
@@ -257,29 +370,54 @@ pub struct PageRenderer {
     config: RenderConfig,
     pdf: Option<Pdf>,
     settings: InterpreterSettings,
+    stats: RenderStats,
 }
 
 impl PageRenderer {
     pub fn new(bytes: Arc<Vec<u8>>, config: RenderConfig) -> Self {
         let pdf = parse(&bytes, config.password.as_deref());
         let settings = config.settings();
-        Self { bytes, config, pdf, settings }
+        Self { bytes, config, pdf, settings, stats: RenderStats { parser_builds: 1, ..RenderStats::default() } }
     }
 
     pub fn page_count(&self) -> usize {
         self.pdf.as_ref().map(|p| p.pages().len()).unwrap_or(0)
     }
 
+    /// Snapshot the work counters collected by this renderer.
+    pub fn stats(&self) -> RenderStats {
+        self.stats
+    }
+
     /// Render one page. Never panics.
     pub fn render(&mut self, req: RenderRequest) -> RenderedPage {
         let start = Stopwatch::start();
-        let Some(pdf) = self.pdf.as_ref() else { return finish(req, start, Err(("the document could not be parsed".into(), false))) };
+        if self.pdf.is_some() {
+            self.stats.render_requests += 1;
+            if req.tile.is_some() {
+                self.stats.tile_requests += 1;
+            }
+            match req.kind {
+                RequestKind::Pixels => {
+                    self.stats.page_interpretations += 1;
+                    self.stats.rasterizations += 1;
+                }
+                RequestKind::Text => self.stats.text_interpretations += 1,
+            }
+        }
+        let Some(pdf) = self.pdf.as_ref() else {
+            return finish(req, start, Err(("the document could not be parsed".into(), false)), Vec::new());
+        };
         let cache = RenderCache::new();
-        let r = render_page(pdf, &cache, &self.settings, req);
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let settings = warning_settings(&self.settings, warnings.clone());
+        let r = render_page(pdf, &cache, &settings, self.config.reject_oversize, req);
+        let warnings = take_warnings(&warnings);
         if matches!(r, Err((_, true))) {
             self.pdf = parse(&self.bytes, self.config.password.as_deref());
+            self.stats.parser_builds += 1;
         }
-        finish(req, start, r)
+        finish(req, start, r, warnings)
     }
 }
 
@@ -321,9 +459,10 @@ struct Shared {
     /// Per worker id: the request it is rendering and since when.
     #[cfg(not(target_arch = "wasm32"))]
     busy: Mutex<Vec<Option<Busy>>>,
-    /// Pages (and request kinds) the watchdog gave up on: answered with an error at once, so a
-    /// pathological page cannot trap every worker in turn.
-    stuck: Mutex<std::collections::HashSet<(usize, RequestKind)>>,
+    /// Exact requests the watchdog gave up on: answered with an error at once, so a pathological
+    /// request cannot trap every worker in turn while other scales, tiles, or generations remain usable.
+    stuck: Mutex<std::collections::HashSet<RequestFailureKey>>,
+    stats: AtomicRenderStats,
     /// Per worker id: set to stop that worker's render at its next content operator once nobody
     /// can receive its answer (the pool was dropped, or the watchdog gave up on the render).
     /// Lock `busy` first when holding both.
@@ -548,6 +687,11 @@ impl RenderPool {
         self.inline.is_some()
     }
 
+    /// Snapshot the work counters collected by this pool.
+    pub fn stats(&self) -> RenderStats {
+        self.inline.as_ref().map_or_else(|| self.shared.stats.snapshot(), |renderer| renderer.borrow().stats())
+    }
+
     /// Change the watchdog limit (tests and benchmarks).
     pub fn set_stuck_after(&mut self, limit: std::time::Duration) {
         self.stuck_after = limit;
@@ -599,6 +743,7 @@ impl RenderPool {
                 rgba: Pixels::default(),
                 error: Some("all render workers exceeded their time limits; close and reopen the document to try again".into()),
                 text: None,
+                warnings: Vec::new(),
                 millis: 0,
             })
         })
@@ -640,7 +785,7 @@ impl RenderPool {
                     // the timeout to this page; do not blacklist it here.
                     self.shared.queue.retry(req);
                 } else {
-                    lock(&self.shared.stuck).insert((req.page, req.kind));
+                    lock(&self.shared.stuck).insert(req.into());
                     let what = if req.kind == RequestKind::Text { "text extraction for page" } else { "page" };
                     let error = format!(
                         "{what} {} took longer than {:.0} s and was skipped; the page may be damaged or extremely complex",
@@ -654,6 +799,7 @@ impl RenderPool {
                         rgba: Pixels::default(),
                         error: Some(error),
                         text: None,
+                        warnings: Vec::new(),
                         millis: 0,
                     });
                 }
@@ -690,7 +836,8 @@ fn worker(
     out: Arc<WorkQueue>,
     stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let settings = worker_settings(&config, &stop);
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let settings = warning_settings(&worker_settings(&config, &stop), warnings.clone());
     // A local cell keeps Pdf borrows used by RenderCache stable. Drop both on an
     // epoch change/panic before publishing an error or taking another request.
     loop {
@@ -710,15 +857,25 @@ fn worker(
                 if shared.queue.cancel_obsolete(req) {
                     continue;
                 }
-                if lock(&shared.stuck).contains(&(req.page, req.kind)) {
+                if lock(&shared.stuck).contains(&req.into()) {
                     let error = format!("page {} was skipped earlier because rendering failed or took too long", req.page + 1);
-                    let page = RenderedPage { request: req, width: 0, height: 0, rgba: Pixels::default(), error: Some(error), text: None, millis: 0 };
+                    let page = RenderedPage {
+                        request: req,
+                        width: 0,
+                        height: 0,
+                        rgba: Pixels::default(),
+                        error: Some(error),
+                        text: None,
+                        warnings: Vec::new(),
+                        millis: 0,
+                    };
                     if out.send_valid(page, None).is_err() {
                         return;
                     }
                     continue;
                 }
                 let start = Stopwatch::start();
+                shared.stats.record_request(req);
                 let stage = parsed.get().map_or(
                     BusyStage::Parsing,
                     |(_, _, shared_generation)| {
@@ -738,6 +895,7 @@ fn worker(
                                 std::thread::sleep(delay);
                             }
                         }
+                        shared.stats.parser_builds.fetch_add(1, Ordering::Relaxed);
                         parse(&bytes, config.password.as_deref())
                     };
                     match shared.parser.acquire(load, || matches!(wake.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected))) {
@@ -768,7 +926,10 @@ fn worker(
                     if lock(&shared.busy).get_mut(id).is_none_or(|slot| slot.take().is_none()) {
                         return;
                     }
-                    break Some((finish(req, start, Err(("the shared parser was retired".into(), false))), Some(shared.parser.valid.clone())));
+                    break Some((
+                        finish(req, start, Err(("the shared parser was retired".into(), false)), Vec::new()),
+                        Some(shared.parser.valid.clone()),
+                    ));
                 }
                 #[cfg(test)]
                 {
@@ -785,17 +946,19 @@ fn worker(
                         std::thread::sleep(delay);
                     }
                 }
+                lock(&warnings).clear();
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     #[cfg(test)]
                     if *lock(&shared.panic_page) == Some(req.page) {
                         panic!("injected page panic");
                     }
                     match pdf {
-                        Some(pdf) => render_page(pdf, cache, &settings, req),
+                        Some(pdf) => render_page(pdf, cache, &settings, config.reject_oversize, req),
                         None => Err(("the document could not be parsed".into(), false)),
                     }
                 }))
                 .unwrap_or_else(|panic| Err((format!("renderer crashed on page {}: {}", req.page + 1, panic_message(&panic)), true)));
+                let request_warnings = take_warnings(&warnings);
                 // If the watchdog cleared our slot meanwhile, it already answered for this request
                 // and started a replacement: drop the late result and retire.
                 let abandoned = lock(&shared.busy).get_mut(id).is_none_or(|slot| slot.take().is_none());
@@ -805,14 +968,14 @@ fn worker(
                 let panicked = matches!(r, Err((_, true)));
                 if panicked {
                     shared.parser.abandon();
-                    lock(&shared.stuck).insert((req.page, req.kind));
-                    break Some((finish(req, start, r), None));
+                    lock(&shared.stuck).insert(req.into());
+                    break Some((finish(req, start, r, request_warnings), None));
                 }
                 let valid = shared_generation.then(|| shared.parser.valid.clone());
                 if *shared_generation && !shared.parser.valid.load(Ordering::Acquire) {
-                    break Some((finish(req, start, r), valid));
+                    break Some((finish(req, start, r, request_warnings), valid));
                 }
-                if out.send_valid(finish(req, start, r), valid).is_err() {
+                if out.send_valid(finish(req, start, r, request_warnings), valid).is_err() {
                     return;
                 }
             }
@@ -976,8 +1139,8 @@ mod tests {
         assert!(matches!(*lock(&pool.shared.parser.state), ParserState::Private));
         assert!((2..=4).contains(&pool.shared.parses.load(Ordering::Relaxed)));
         let before = pool.shared.parses.load(Ordering::Relaxed);
-        pool.set_queue(vec![RenderRequest { page: 0, tag: 1, scale: 1.0, ..Default::default() }]);
-        assert!(receive_before_deadline(&pool).error.is_some());
+        pool.set_queue(vec![RenderRequest { page: 0, scale: 1.0, ..Default::default() }]);
+        assert!(receive_before_deadline(&pool).error.as_deref().is_some_and(|message| message.contains("skipped earlier")));
         assert_eq!(pool.shared.parses.load(Ordering::Relaxed), before, "a failed page does not trigger repeated parsing");
     }
 
@@ -1063,8 +1226,8 @@ mod tests {
         assert!(pages[0].error.as_deref().is_some_and(|message| message.contains("took longer")));
         assert!(pages[1].error.is_none(), "{:?}", pages[1].error);
         assert_eq!((pages[1].width, pages[1].height, pages[1].request.tag), (100, 50, 41));
-        assert!(lock(&pool.shared.stuck).contains(&(0, RequestKind::Pixels)));
-        assert!(!lock(&pool.shared.stuck).contains(&(1, RequestKind::Pixels)));
+        assert!(lock(&pool.shared.stuck).contains(&RequestFailureKey::from(RenderRequest { page: 0, scale: 1.0, tag: 40, ..Default::default() })));
+        assert!(!lock(&pool.shared.stuck).contains(&RequestFailureKey::from(RenderRequest { page: 1, scale: 1.0, tag: 41, ..Default::default() })));
         assert!((2..=3).contains(&pool.shared.parses.load(Ordering::Relaxed)), "one shared parser and one or two reusable private parsers");
         assert!(lock(&pool._workers).len() <= 4, "the existing replacement cap is unchanged");
     }
@@ -1087,7 +1250,7 @@ mod tests {
         assert!(exhausted.error.as_deref().is_some_and(|message| message.contains("all render workers") && message.contains("reopen")));
         assert_eq!(pool.shared.parses.load(Ordering::Relaxed), 2);
         assert_eq!(lock(&pool._workers).len(), 2, "no threads beyond the original replacement cap");
-        assert!(!lock(&pool.shared.stuck).contains(&(1, RequestKind::Pixels)), "the healthy page itself is not blacklisted");
+        assert!(!lock(&pool.shared.stuck).contains(&RequestFailureKey::from(healthy)), "the healthy page itself is not blacklisted");
         let later = RenderRequest { tag: 52, ..healthy };
         pool.set_queue(vec![later]);
         let result = receive_before_deadline(&pool);
@@ -1099,6 +1262,25 @@ mod tests {
             worker.join().unwrap();
         }
         assert!(pool.try_recv().is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_failed_request_does_not_blacklist_other_scales_or_generations() {
+        let pool = RenderPool::new(Arc::new(ONE_PAGE.to_vec()), 1, RenderConfig::default());
+        let bad = RenderRequest { page: 0, scale: 1.0, tag: 70, ..Default::default() };
+        let good = RenderRequest { page: 0, scale: 0.5, tag: 71, ..Default::default() };
+        lock(&pool.shared.stuck).insert(bad.into());
+        pool.set_queue(vec![bad]);
+        let failed = receive_before_deadline(&pool);
+        assert_eq!(failed.request, bad);
+        assert!(failed.error.as_deref().is_some_and(|message| message.contains("skipped earlier")));
+        pool.set_queue(vec![good]);
+        let recovered = receive_before_deadline(&pool);
+        assert_eq!(recovered.request, good);
+        assert!(recovered.error.is_none(), "a distinct request must be retried: {:?}", recovered.error);
+        assert!(lock(&pool.shared.stuck).contains(&RequestFailureKey::from(bad)));
+        assert!(!lock(&pool.shared.stuck).contains(&RequestFailureKey::from(good)));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1132,7 +1314,7 @@ mod tests {
             if skipped {
                 let req = RenderRequest { page: 0, ..Default::default() };
                 shared.queue.replace(vec![req]);
-                lock(&shared.stuck).insert((req.page, req.kind));
+                lock(&shared.stuck).insert(req.into());
             }
             let bytes = Arc::new(ONE_PAGE.to_vec());
             let source = Arc::downgrade(&bytes);
@@ -1170,6 +1352,17 @@ mod tests {
             }
             assert_eq!(pool.shared.parses.load(std::sync::atomic::Ordering::Relaxed), 1, "requests reuse one parser");
         }
+        assert_eq!(
+            pool.stats(),
+            RenderStats {
+                parser_builds: 1,
+                page_interpretations: 2,
+                render_requests: 3,
+                tile_requests: 0,
+                text_interpretations: 1,
+                rasterizations: 2
+            }
+        );
         drop(pool);
         let until = std::time::Instant::now() + std::time::Duration::from_secs(8);
         while source.upgrade().is_some() {
@@ -1655,6 +1848,51 @@ endstream endobj
 trailer << /Root 1 0 R >>
 %%EOF";
 
+    fn heavy_vector_pdf(commands: usize, text_at_end: bool) -> Vec<u8> {
+        let mut body = String::with_capacity(commands * 42 + 64);
+        for i in 0..commands {
+            let x = (i % 280) as u32;
+            let y = ((i / 280) % 280) as u32;
+            body.push_str(&format!("0 0 0 rg {x} {y} 1 1 re f\n"));
+        }
+        if text_at_end {
+            body.push_str("BT /F1 18 Tf 20 280 Td (TRAILING_MARKER) Tj ET\n");
+        }
+        format!(
+            "%PDF-1.4\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{body}endstream endobj\n\
+             5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn heavy_vector_fixture_preserves_trailing_text_and_raster_output() {
+        let mut renderer = PageRenderer::new(Arc::new(heavy_vector_pdf(5_000, true)), RenderConfig::default());
+        let pixels = renderer.render(RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+        assert!(pixels.error.is_none(), "heavy vector render failed: {:?}", pixels.error);
+        assert!(pixels.rgba.as_chunks::<4>().0.iter().any(|pixel| *pixel != [255, 255, 255, 255]));
+        let text = renderer.render(RenderRequest { page: 0, kind: RequestKind::Text, ..Default::default() });
+        assert!(text.error.is_none(), "heavy vector text failed: {:?}", text.error);
+        assert!(text.text.is_some_and(|page| page.plain_text().contains("TRAILING_MARKER")));
+        assert_eq!(
+            renderer.stats(),
+            RenderStats {
+                parser_builds: 1,
+                page_interpretations: 1,
+                render_requests: 2,
+                tile_requests: 0,
+                text_interpretations: 1,
+                rasterizations: 1
+            }
+        );
+    }
+
     #[test]
     fn large_resource_indexes_preserve_pixels_and_text() {
         // #307: opening pages used to retain a hash table for every large resource
@@ -1772,6 +2010,25 @@ trailer << /Root 1 0 R >>
         let s = effective_scale(14_400.0, 14_400.0, 4.0);
         assert!(14_400.0 * s <= MAX_SIDE + 0.5);
         assert!((14_400.0 * s).powi(2) <= MAX_PIXELS * 1.01);
+    }
+
+    #[test]
+    fn strict_whole_page_render_refuses_cap_reduction_but_tiles_remain_available() {
+        let pdf = b"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 14400 14400] /Contents 4 0 R >> endobj
+4 0 obj << /Length 0 >> stream
+endstream endobj
+trailer << /Root 1 0 R >>
+%%EOF";
+        let config = RenderConfig { reject_oversize: true, ..RenderConfig::default() };
+        let mut renderer = PageRenderer::new(Arc::new(pdf.to_vec()), config);
+        let whole = renderer.render(RenderRequest { page: 0, scale: 4.0, ..Default::default() });
+        assert!(whole.error.as_deref().is_some_and(|error| error.contains("exceeds renderer limits")));
+        let tile = renderer.render(RenderRequest { page: 0, tile: Some(Tile { x: 0, y: 0, w: 32, h: 32 }), scale: 4.0, ..Default::default() });
+        assert!(tile.error.is_none(), "tiled rendering must remain available: {:?}", tile.error);
+        assert_eq!((tile.width, tile.height), (32, 32));
     }
 
     /// Issue #102: an A4 page (595.28×841.89 pt) rendered 595×841 at 72 dpi, dropping the last
@@ -2967,6 +3224,7 @@ trailer << /Root 1 0 R >>
         });
         let page = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("a self-painting form must not stall the renderer");
         assert!(page.error.is_none(), "{:?}", page.error);
+        assert!(page.warnings.contains(&RenderWarning::ContentTruncated), "the skipped nested content is observable");
         assert_eq!(&page.rgba[((38 * 40 + 1) * 4)..][..4], &[255, 0, 0, 255], "the rest of the page draws");
     }
 

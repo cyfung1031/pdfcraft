@@ -47,14 +47,17 @@ impl Exporter {
     }
 
     pub fn from_source(src: ExportSource) -> Self {
-        Self { renderer: PageRenderer::new(src.bytes, src.config), pages: src.pages }
+        let mut config = src.config;
+        config.reject_oversize = true;
+        Self { renderer: PageRenderer::new(src.bytes, config), pages: src.pages }
     }
 
     fn check(&self, page: usize) -> Result<(), String> {
         if page < self.pages { Ok(()) } else { Err(format!("page {} does not exist", page + 1)) }
     }
 
-    /// Page `page` (0-based) as a PNG at `dpi` (capped by the renderer's size limits).
+    /// Page `page` (0-based) as a PNG at `dpi`. Whole-page requests above the renderer's hard
+    /// size limits fail explicitly; callers can use tiled rendering for very large pages.
     pub fn png(&mut self, page: usize, dpi: f64) -> Result<Vec<u8>, String> {
         self.check(page)?;
         let r = self.renderer.render(RenderRequest { page, scale: (dpi.clamp(18.0, 1200.0) / 72.0) as f32, ..Default::default() });

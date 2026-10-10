@@ -34,6 +34,7 @@ pub(crate) const MAX_NESTED_PAINTS: u32 = 50_000;
 std::thread_local! {
     static NESTED_PAINTS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
     static CONTENT_LEFT: core::cell::Cell<usize> = const { core::cell::Cell::new(MAX_PAGE_CONTENT) };
+    static CONTENT_TRUNCATED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 /// PdfCraft patch: decoded content-stream bytes one page may hold at once: its contents, and
@@ -70,6 +71,7 @@ impl Drop for DecodedContent<'_> {
 pub(crate) fn decode_content<'a>(stream: &Stream<'a>) -> Option<DecodedContent<'a>> {
     let left = CONTENT_LEFT.with(core::cell::Cell::get);
     if left == 0 {
+        CONTENT_TRUNCATED.with(|truncated| truncated.set(true));
         warn!("page content budget exceeded");
         return None;
     }
@@ -85,6 +87,10 @@ pub(crate) fn decode_content<'a>(stream: &Stream<'a>) -> Option<DecodedContent<'
 /// PdfCraft patch: count `len` bytes held for the rest of the page (its own contents).
 pub(crate) fn charge_content(len: usize) {
     CONTENT_LEFT.with(|c| c.set(c.get().saturating_sub(len)));
+}
+
+pub(crate) fn content_was_truncated() -> bool {
+    CONTENT_TRUNCATED.with(core::cell::Cell::get)
 }
 
 /// PdfCraft patch: count a paint at `depth` (top-level ones are free); `false` once this
@@ -158,6 +164,7 @@ impl<'a> Context<'a> {
         // PdfCraft patch: a page (or other top-level content) starts with fresh budgets.
         NESTED_PAINTS.with(|n| n.set(0));
         CONTENT_LEFT.with(|c| c.set(MAX_PAGE_CONTENT));
+        CONTENT_TRUNCATED.with(|truncated| truncated.set(false));
         crate::encode::reset_mesh_budget();
 
         Self::new_with(initial_transform, bbox, cache, xref, settings, state, 0)
