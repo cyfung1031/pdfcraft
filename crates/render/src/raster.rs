@@ -158,18 +158,19 @@ pub struct RenderRequest {
     pub tag: u64,
 }
 
+/// What a render that panicked or overran the watchdog is remembered by: its page and kind. Not
+/// its scale, tile or tag: the canvas tags every zoom level and tile anew, so a wider key would
+/// let one pathological page tie up a worker for the full watchdog limit per zoom and per tile
+/// (exhausting worker replacements) and re-parse the document for every new request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct RequestFailureKey {
     page: usize,
     kind: RequestKind,
-    tile: Option<Tile>,
-    scale: u32,
-    tag: u64,
 }
 
 impl From<RenderRequest> for RequestFailureKey {
     fn from(req: RenderRequest) -> Self {
-        Self { page: req.page, kind: req.kind, tile: req.tile, scale: req.scale.to_bits(), tag: req.tag }
+        Self { page: req.page, kind: req.kind }
     }
 }
 
@@ -1139,7 +1140,8 @@ mod tests {
         assert!(matches!(*lock(&pool.shared.parser.state), ParserState::Private));
         assert!((2..=4).contains(&pool.shared.parses.load(Ordering::Relaxed)));
         let before = pool.shared.parses.load(Ordering::Relaxed);
-        pool.set_queue(vec![RenderRequest { page: 0, scale: 1.0, ..Default::default() }]);
+        // A new generation (tag) and scale of the failed page is still refused without parsing again.
+        pool.set_queue(vec![RenderRequest { page: 0, tag: 1, scale: 2.0, ..Default::default() }]);
         assert!(receive_before_deadline(&pool).error.as_deref().is_some_and(|message| message.contains("skipped earlier")));
         assert_eq!(pool.shared.parses.load(Ordering::Relaxed), before, "a failed page does not trigger repeated parsing");
     }
@@ -1266,21 +1268,22 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn a_failed_request_does_not_blacklist_other_scales_or_generations() {
-        let pool = RenderPool::new(Arc::new(ONE_PAGE.to_vec()), 1, RenderConfig::default());
+    fn a_failed_page_stays_refused_at_every_scale_and_generation_but_other_pages_render() {
+        let pool = RenderPool::new(Arc::new(ONE_PAGE_TWICE.to_vec()), 1, RenderConfig::default());
         let bad = RenderRequest { page: 0, scale: 1.0, tag: 70, ..Default::default() };
-        let good = RenderRequest { page: 0, scale: 0.5, tag: 71, ..Default::default() };
         lock(&pool.shared.stuck).insert(bad.into());
-        pool.set_queue(vec![bad]);
-        let failed = receive_before_deadline(&pool);
-        assert_eq!(failed.request, bad);
-        assert!(failed.error.as_deref().is_some_and(|message| message.contains("skipped earlier")));
-        pool.set_queue(vec![good]);
-        let recovered = receive_before_deadline(&pool);
-        assert_eq!(recovered.request, good);
-        assert!(recovered.error.is_none(), "a distinct request must be retried: {:?}", recovered.error);
-        assert!(lock(&pool.shared.stuck).contains(&RequestFailureKey::from(bad)));
-        assert!(!lock(&pool.shared.stuck).contains(&RequestFailureKey::from(good)));
+        for req in [bad, RenderRequest { scale: 0.5, tag: 71, ..bad }, RenderRequest { tile: Some(Tile { x: 0, y: 0, w: 8, h: 8 }), tag: 72, ..bad }]
+        {
+            pool.set_queue(vec![req]);
+            let failed = receive_before_deadline(&pool);
+            assert_eq!(failed.request, req);
+            assert!(failed.error.as_deref().is_some_and(|message| message.contains("skipped earlier")), "{req:?}: {:?}", failed.error);
+        }
+        let other = RenderRequest { page: 1, scale: 0.5, tag: 73, ..Default::default() };
+        pool.set_queue(vec![other]);
+        let rendered = receive_before_deadline(&pool);
+        assert_eq!(rendered.request, other);
+        assert!(rendered.error.is_none(), "another page still renders: {:?}", rendered.error);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
