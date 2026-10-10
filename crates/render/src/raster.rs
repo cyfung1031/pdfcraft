@@ -3188,6 +3188,46 @@ trailer << /Root 1 0 R >>
         }
     }
 
+    #[test]
+    fn form_cycles_are_bounded_and_finite_nesting_paints() {
+        let cases = [
+            ("self-cycle", "/A Do 0 0 1 rg 0 0 8 8 re f", "0 0 1 rg 0 0 8 8 re f"),
+            ("two-form-cycle", "/B Do 0 0 1 rg 0 0 8 8 re f", "/A Do 0 0 1 rg 0 0 8 8 re f"),
+            ("finite-nesting", "/B Do", "0 0 1 rg 0 0 8 8 re f"),
+        ];
+        let page_content = "/A Do 1 0 0 rg 32 32 8 8 re f";
+        for (case, form_a, form_b) in cases {
+            let pdf = format!(
+                "%PDF-1.7\n\
+                 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+                 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 40 40] >> endobj\n\
+                 3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /A 5 0 R /B 6 0 R >> >> >> endobj\n\
+                 4 0 obj << /Length {} >> stream\n{page_content}\nendstream endobj\n\
+                 5 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 40 40] /Length {} >> stream\n{form_a}\nendstream endobj\n\
+                 6 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 40 40] /Length {} >> stream\n{form_b}\nendstream endobj\n\
+                 trailer << /Root 1 0 R >>\n%%EOF",
+                page_content.len(),
+                form_a.len(),
+                form_b.len()
+            )
+            .into_bytes();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut renderer = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+                let _ = tx.send(renderer.render(RenderRequest { page: 0, scale: 1.0, ..Default::default() }));
+            });
+            let page = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| panic!("{case}: render did not finish"));
+            assert!(page.error.is_none(), "{case}: {:?}", page.error);
+            assert_eq!((page.width, page.height), (40, 40), "{case}");
+            let pixel = |x: u32, y: u32| {
+                let offset = ((y * page.width + x) * 4) as usize;
+                [page.rgba[offset], page.rgba[offset + 1], page.rgba[offset + 2], page.rgba[offset + 3]]
+            };
+            assert_eq!(pixel(3, 35), [0, 0, 255, 255], "{case}: nested form content paints");
+            assert_eq!(pixel(35, 4), [255, 0, 0, 255], "{case}: page content after the form still paints");
+        }
+    }
+
     /// Review of the decompression-bomb fix: one stream stopping at `MAX_DECODED_STREAM` isn't
     /// enough when streams add up. A page's `/Contents` array can name the same bomb many times,
     /// and a form that paints itself nests fifty deep, each level keeping its content while the
