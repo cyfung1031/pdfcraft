@@ -554,8 +554,7 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                             outline_item(ui, &t, info, item, &[i], info.outline.len(), &mut ctx);
                         }
                         if info.outline_more {
-                            // English in every locale: the coverage tests need a catalogue entry for every tl! label.
-                            ui.label("Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.");
+                            ui.label(tl!("Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth."));
                         }
                     }
                     RightPanel::Pages => pages(ui, &t, info, view, modal, bm_editable, &mut nav),

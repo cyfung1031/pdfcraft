@@ -786,6 +786,7 @@
 	Dates	Дати
 	Text in images isn't found; recognise text (OCR) first.	Текстът в изображения не се открива; първо разпознайте текста (OCR).
 	No matches.	Няма съвпадения.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	Някои отметки не са показани тук: панелът показва ограничен брой, с ограничена дълбочина на влагане.
 	{n} match(es) marked for redaction.	{n} съвпадение(я) маркирани за заличаване.
 	Multiple words or phrases	Няколко думи или фрази
 	One word or phrase per line	По една дума или фраза на ред

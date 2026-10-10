@@ -240,7 +240,7 @@ fn page_of_dest(doc: &Document, targets: &mut Targets, dest: &Object, depth: u8)
         Object::Array(a) => match a.first()? {
             Object::Ref(page) => targets.pages.get(page).copied(),
             // Some producers write a page number in a remote-style destination.
-            Object::Int(n) => usize::try_from(*n).ok(),
+            Object::Int(n) => usize::try_from(*n).ok().filter(|&p| p < targets.pages.len()),
             _ => None,
         },
         Object::Dict(d) => page_of_dest(doc, targets, d.get(b"D")?, depth + 1),

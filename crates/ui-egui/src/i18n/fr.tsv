@@ -1074,6 +1074,7 @@
 	Dates	Dates
 	Text in images isn't found; recognise text (OCR) first.	Le texte dans les images n'est pas trouvé ; reconnaissez d'abord le texte (OCR).
 	No matches.	Aucune correspondance.
+	Some bookmarks are not shown here: the panel lists a limited number, nested a limited depth.	Certains signets ne sont pas affichés ici : le panneau en liste un nombre limité, sur une profondeur limitée.
 	{n} match(es) marked for redaction.	{n} correspondance(s) marquée(s) pour biffure.
 	Multiple words or phrases	Plusieurs mots ou expressions
 	One word or phrase per line	Un mot ou une expression par ligne
