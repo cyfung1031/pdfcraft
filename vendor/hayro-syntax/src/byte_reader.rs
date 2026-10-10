@@ -3,6 +3,10 @@
 use core::cell::Cell;
 use core::ops::Range;
 
+/// PdfCraft patch: how deeply direct arrays and dictionaries may nest (the same cap as `pdfcraft-cos`; a
+/// chain of 64 direct stitching functions is exactly this deep).
+const MAX_CONTAINER_DEPTH: usize = 128;
+
 /// A reader for reading bytes and PDF objects.
 #[derive(Clone, Debug)]
 pub struct Reader<'a> {
@@ -13,6 +17,9 @@ pub struct Reader<'a> {
     /// PdfCraft patch: set when a read needed a byte past the end of `data`. A decision made from
     /// such a read could change if more data followed (see `content::UntypedIter`).
     past_end: Cell<bool>,
+    // PdfCraft patch: bound direct-object nesting while skipping arrays and dictionaries
+    // and while parsing dictionaries (`Dict::skip`, `Array::skip`, `parse_dict_with`).
+    skip_depth: usize,
 }
 
 impl<'a> Reader<'a> {
@@ -25,11 +32,7 @@ impl<'a> Reader<'a> {
     /// Create a new reader at the given offset.
     #[inline]
     pub fn new_with(data: &'a [u8], offset: usize) -> Self {
-        Self {
-            data,
-            offset,
-            past_end: Cell::new(false),
-        }
+        Self { data, offset, past_end: Cell::new(false), skip_depth: 0 }
     }
 
     /// PdfCraft patch: whether a read needed bytes past the end of the data since the flag was
@@ -43,6 +46,18 @@ impl<'a> Reader<'a> {
     #[inline]
     pub(crate) fn clear_looked_past_end(&self) {
         self.past_end.set(false);
+    }
+
+    pub(crate) fn enter_container(&mut self) -> Option<()> {
+        if self.skip_depth >= MAX_CONTAINER_DEPTH {
+            return None;
+        }
+        self.skip_depth += 1;
+        Some(())
+    }
+
+    pub(crate) fn leave_container(&mut self) {
+        self.skip_depth -= 1;
     }
 
     /// Returns `true` if the reader has reached the end of the data.
