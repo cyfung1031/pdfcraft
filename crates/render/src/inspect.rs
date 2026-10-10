@@ -14,7 +14,7 @@ use hayro::hayro_syntax::DecryptionError;
 use hayro::hayro_syntax::LoadPdfError;
 use hayro::hayro_syntax::Pdf;
 use lopdf::{Dictionary, Document, LoadOptions, Object, ObjectId};
-use pdfcraft_cos::page_labels::{MAX_LABEL_BYTES, MAX_LABEL_TOTAL_BYTES, MAX_LABEL_TREE_DEPTH, MAX_LABEL_TREE_WORK, MAX_PREFIX_BYTES, alpha, roman};
+use pdfcraft_cos::page_labels::{MAX_LABEL_BYTES, MAX_LABEL_TREE_DEPTH, MAX_LABEL_TREE_WORK, MAX_PREFIX_BYTES, alpha, roman};
 
 use crate::OpenError;
 use crate::structure::{LazyStructure, Structure};
@@ -761,7 +761,6 @@ impl<'a> Inspector<'a> {
             specs.insert(start, (first, prefix, style));
         }
         let mut staged = Vec::new();
-        let mut total = 0usize;
         for (i, _) in pages.iter().enumerate() {
             let Some((&start, (first, prefix, style))) = specs.range(..=i).next_back() else { continue };
             let n = if matches!(*style, Some(b"D" | b"R" | b"r" | b"A" | b"a")) {
@@ -796,10 +795,6 @@ impl<'a> Inspector<'a> {
             label.push_str(&number);
             if label.is_empty() {
                 continue; // Keep the existing physical number for an empty custom label.
-            }
-            total = total.checked_add(label.len()).ok_or("the total label size overflows")?;
-            if total > MAX_LABEL_TOTAL_BYTES {
-                return Err("custom labels exceed 4 MiB in total");
             }
             staged.push((i, label));
         }
@@ -1453,22 +1448,18 @@ mod tests {
     }
 
     #[test]
-    fn page_label_limits_bound_total_custom_output_atomically() {
+    fn page_label_limits_apply_labels_past_four_mib_in_total() {
+        // 4,097 labels of 1,024 bytes: each within the limit, together past 4 MiB.
         let doc = Document::with_version("1.7");
         let mut tree = Dictionary::new();
         tree.set("Nums", vec![Object::Integer(0), label_spec("", vec![b'x'; MAX_LABEL_BYTES], 1)]);
         let mut catalog = Dictionary::new();
         catalog.set("PageLabels", Object::Dictionary(tree));
-        let count = MAX_LABEL_TOTAL_BYTES / MAX_LABEL_BYTES + 1;
-        let mut pages: Vec<_> = (1..=count)
+        let mut pages: Vec<_> = (1..=4_097)
             .map(|n| PageInfo { width: 200.0, height: 300.0, crop: [0.0, 0.0, 200.0, 300.0], rotation: 0, label: n.to_string() })
             .collect();
-        let err = Inspector::new(&doc).page_labels(&catalog, &mut pages).unwrap_err();
-        assert!(err.contains("4 MiB"), "{err}");
-        assert!(pages.iter().enumerate().all(|(i, p)| p.label == (i + 1).to_string()));
-        // Exact aggregate boundary remains supported.
-        pages.pop();
-        Inspector::new(&doc).page_labels(&catalog, &mut pages).unwrap();
+        let notes = Inspector::new(&doc).page_labels(&catalog, &mut pages).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
         assert!(pages.iter().all(|p| p.label.len() == MAX_LABEL_BYTES));
     }
 
