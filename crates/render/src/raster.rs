@@ -83,8 +83,8 @@ fn japanese_fallback(query: &FontQuery) -> Option<(FontData, u32)> {
     }
     let face = match japanese_face(f.post_script_name.as_deref().unwrap_or_default(), f.is_serif, f.is_bold || f.font_weight >= 600) {
         // BIZ UDMincho before the document face (Shippori Mincho): it covers half-width katakana
-        // (U+FF61–U+FF9F), which Shippori Mincho lacks, and hayro draws a CID the substitute
-        // can't map by Unicode by glyph index, i.e. as an unrelated glyph (ﬁ, ﬂ, …).
+        // (U+FF61–U+FF9F), which Shippori Mincho lacks, and a character the substitute lacks is
+        // drawn as .notdef.
         JapaneseFace::Mincho => pdfcraft_fonts::ui_japanese_fonts()
             .into_iter()
             .find(|c| c.family == "BIZ UDMincho" && c.style == "Regular")
@@ -3427,7 +3427,7 @@ trailer << /Root 1 0 R >>
 
     /// Half-width katakana are common in Japanese documents set in a non-embedded Mincho font
     /// such as HeiseiMin-W3. The Mincho substitute must have those glyphs: one that lacks them
-    /// (Shippori Mincho) draws each CID by glyph index instead, as unrelated glyphs (ﬁ, ﬂ).
+    /// (Shippori Mincho) draws them as .notdef.
     #[test]
     fn mincho_substitute_covers_half_width_katakana() {
         use hayro::hayro_interpret::font::FallbackFontQuery;
@@ -3446,6 +3446,49 @@ trailer << /Root 1 0 R >>
         let charmap = font.charmap();
         let missing: Vec<char> = ('\u{FF61}'..='\u{FF9F}').chain(['日', '本']).filter(|&c| charmap.map(c).is_none()).collect();
         assert!(missing.is_empty(), "the Mincho substitute lacks {missing:?}");
+    }
+
+    /// 𠮷 (U+20BB7, Adobe-Japan1 CID 13706) in a non-embedded Japanese font: neither craft-fonts
+    /// substitute has it, and hayro drew the substitute's glyph 13706 instead, which is
+    /// unrelated (in BIZ UDPGothic, "Ｑ"). It draws the substitute's .notdef now, while 吉, which
+    /// the substitutes have, still draws.
+    #[test]
+    fn cids_a_substitute_lacks_are_not_drawn_as_other_glyphs() {
+        if pdfcraft_fonts::document_japanese_font().is_none() {
+            eprintln!("built without craft-fonts (CRAFT_FONTS_DIR unset): no Japanese face to check");
+            return;
+        }
+        let render = |base_font: &str, encoding: &str, code: &str| {
+            let content = format!("BT /F1 40 Tf 5 15 Td <{code}> Tj ET");
+            let pdf = format!(
+                "%PDF-1.7
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 60 60] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type0 /BaseFont /{base_font} /Encoding /{encoding} /DescendantFonts [6 0 R] >> endobj
+6 0 obj << /Type /Font /Subtype /CIDFontType0 /BaseFont /{base_font} /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >>
+  /FontDescriptor 7 0 R /DW 1000 >> endobj
+7 0 obj << /Type /FontDescriptor /FontName /{base_font} /Flags 6 /FontBBox [0 -141 1000 859] /ItalicAngle 0 /Ascent 859 /Descent -141 /CapHeight 700 /StemV 80 >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+                content.len()
+            );
+            let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
+            assert!(p.error.is_none(), "{base_font} <{code}>: {:?}", p.error);
+            p.rgba
+        };
+        let inked = |rgba: &[u8]| rgba.as_chunks::<4>().0.iter().filter(|c| c[0] < 128).count();
+        for base_font in ["HeiseiMin-W3", "HeiseiKakuGo-W5"] {
+            let notdef = render(base_font, "Identity-H", "0000");
+            let missing = render(base_font, "UniJIS-UTF16-H", "D842DFB7");
+            let covered = render(base_font, "UniJIS-UTF16-H", "5409");
+            assert!(missing == notdef, "{base_font}: 𠮷 draws .notdef ({} dark pixels, .notdef {})", inked(&missing), inked(&notdef));
+            assert!(inked(&covered) > 300 && covered != notdef, "{base_font}: 吉 is drawn ({} dark pixels)", inked(&covered));
+        }
     }
 
     #[test]
