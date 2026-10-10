@@ -2484,12 +2484,15 @@ impl Session {
             editor.cos.bytes().clone()
         };
         if scope == Scope::Metadata {
-            doc.info.title = pdfcraft_organize::info(&editor.cos, "Title");
-            doc.info.author = pdfcraft_organize::info(&editor.cos, "Author");
-            doc.info.subject = pdfcraft_organize::info(&editor.cos, "Subject");
-            doc.info.keywords = pdfcraft_organize::info(&editor.cos, "Keywords");
-            doc.info.creator = pdfcraft_organize::info(&editor.cos, "Creator");
-            doc.info.producer = pdfcraft_organize::info(&editor.cos, "Producer");
+            // Read the way the full inspection reads them (NULs and spaces trimmed, empty is
+            // none), so editing one entry doesn't change how the others display.
+            let info = |key| pdfcraft_organize::info(&editor.cos, key).map(|v| v.trim_matches('\0').trim().to_string()).filter(|v| !v.is_empty());
+            doc.info.title = info("Title");
+            doc.info.author = info("Author");
+            doc.info.subject = info("Subject");
+            doc.info.keywords = info("Keywords");
+            doc.info.creator = info("Creator");
+            doc.info.producer = info("Producer");
             doc.info.file_size = bytes.len();
             if !doc.signatures.is_empty() {
                 doc.signatures = signatures_of(&editor.cos, &bytes, &doc.trust, &doc.sig_cache);
