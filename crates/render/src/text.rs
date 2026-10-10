@@ -606,6 +606,9 @@ impl Seg {
 const RUN_COLLISION: f32 = 0.25;
 /// A run that starts inside the runs before it by more than this fraction of the line height starts a new word.
 const RUN_OVERLAP_SPACE: f32 = 0.5;
+/// Pair tests that the collision sweep may make per glyph of a segment. Ordinary text overlaps each glyph with about one
+/// neighbour, so it stays far below this. A segment that needs more is dense, and [`collide`] joins its runs instead.
+const COLLIDE_PAIRS_PER_GLYPH: usize = 16;
 
 /// Reusable buffers, so a page allocates them once rather than per segment. Glyph placement works in them, one
 /// segment at a time, when the segment is emitted.
@@ -736,8 +739,13 @@ fn place_glyphs(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, s: &Seg, s
     }
 }
 
-/// `place_glyphs` for a segment of two or more text runs. `h` is the segment's line height.
-fn collide(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, h: f32, sc: &mut Scratch) {
+/// `place_glyphs` for a segment of two or more text runs. `h` is the segment's line height. Returns whether the segment
+/// was too dense to sweep ([`COLLIDE_PAIRS_PER_GLYPH`]), in which case all its text runs form one component.
+///
+/// The sweep tests each glyph against the glyphs after it that start before its right edge. Its work is bounded by the
+/// budget, so a page costs O(glyphs) pair tests plus the sorts. A dense segment is joined with one pass over its runs,
+/// which keeps each run whole. It may keep runs whole that do not overprint, but never interleaves overprinted glyphs.
+fn collide(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, h: f32, sc: &mut Scratch) -> bool {
     let x0 = |i: usize| glyphs[i].rect[0];
     let runs = sc.text.len();
     sc.owner.clear();
@@ -747,8 +755,10 @@ fn collide(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, h: f32, sc: &mu
     sc.owner.sort_unstable_by(|a, b| x0(a.0).total_cmp(&x0(b.0)).then(a.0.cmp(&b.0)));
     sc.parent.clear();
     sc.parent.extend(0..runs);
+    let mut budget = COLLIDE_PAIRS_PER_GLYPH.saturating_mul(sc.owner.len());
     let mut collided = false;
-    for a in 0..sc.owner.len() {
+    let mut dense = false;
+    'sweep: for a in 0..sc.owner.len() {
         let (i, ri) = sc.owner[a];
         let (x1, hi) = (glyphs[i].rect[2], height(i));
         for b in a + 1..sc.owner.len() {
@@ -756,6 +766,11 @@ fn collide(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, h: f32, sc: &mu
             if x0(j) >= x1 {
                 break;
             }
+            if budget == 0 {
+                dense = true;
+                break 'sweep;
+            }
+            budget -= 1;
             let (ra, rb) = (union_find(&mut sc.parent, ri), union_find(&mut sc.parent, rj));
             let overlap = x1.min(glyphs[j].rect[2]) - x0(j);
             if ra != rb && overlap > RUN_COLLISION * hi.min(height(j)) {
@@ -764,9 +779,14 @@ fn collide(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, h: f32, sc: &mu
             }
         }
     }
+    if dense {
+        // Run 0 is its own root, so every run now has it as its root.
+        sc.parent.iter_mut().for_each(|p| *p = 0);
+        collided = true;
+    }
     if !collided {
         sc.placed.extend(sc.owner.iter().map(|&(i, _)| i));
-        return;
+        return dense;
     }
 
     // Link each component's runs, so they can be walked without a map.
@@ -827,6 +847,7 @@ fn collide(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, h: f32, sc: &mu
     for unit in &sc.units {
         sc.placed.extend_from_slice(&sc.flat[unit.glyphs.clone()]);
     }
+    dense
 }
 
 /// Reverses each right-to-left span of `idx` (visual → logical order). A space between two right-to-left glyphs
@@ -1530,6 +1551,42 @@ mod tests {
         let expected: Vec<&str> = letters.iter().flat_map(|c| [c.as_str(), "\u{301}"]).collect();
         assert_eq!(t.glyphs.iter().map(|g| g.text.as_str()).collect::<Vec<_>>(), expected);
         assert!(t.line_of.iter().all(|line| *line == 0));
+    }
+
+    /// `count` runs of three glyphs, each starting within 3 pt of x = 10 on one baseline, so they all overprint one
+    /// another. Every glyph has a text of its own, so no glyph is taken for a fake-bold copy. With `separated`, each run
+    /// follows a far-off glyph, which makes it a run of its own.
+    fn overprinted_runs(count: usize, separated: bool) -> Vec<TextGlyph> {
+        let mut v = Vec::new();
+        for k in 0..count {
+            let text: String = (0..3).map(|i| char::from_u32(0x4E00 + (3 * k + i) as u32).unwrap()).collect();
+            word(&mut v, &text, 10.0 + (k * 7 % 31) as f32 * 0.1, 10.0, 6.0);
+            if separated {
+                let far = char::from_u32(0x2500 + k as u32).unwrap().to_string();
+                v.push(g(&far, 500.0, 10.0, 506.0));
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn a_dense_overprint_joins_its_runs_and_keeps_each_whole() {
+        // 150 runs of three glyphs: about 100 000 overlapping pairs, far more than the sweep's budget. The segment is
+        // joined as one component, so the sweep is skipped, and each run still comes out whole.
+        let v = overprinted_runs(150, false);
+        let refs: Vec<&TextGlyph> = v.iter().collect();
+        let height = |i: usize| (refs[i].rect[3] - refs[i].rect[1]).max(0.1);
+        let mut sc = Scratch { text: (0..150).map(|k| Run { start: 3 * k, end: 3 * k + 3 }).collect(), ..Default::default() };
+        assert!(collide(&refs, &height, 10.0, &mut sc), "more pairs than the budget");
+        assert_eq!(sc.units.len(), 1, "one component");
+
+        let v = overprinted_runs(150, true);
+        let runs: Vec<String> = (0..150).map(|k| v[4 * k..4 * k + 3].iter().map(|g| g.text.as_str()).collect()).collect();
+        let t = layout(v);
+        assert_eq!(t.glyphs.len(), 600);
+        for run in &runs {
+            assert!(!t.find(run).is_empty(), "{run:?} whole in {:?}", t.plain_text());
+        }
     }
 
     #[test]
