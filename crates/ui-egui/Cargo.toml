@@ -4,11 +4,13 @@ description = "The egui shell of PdfCraft"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version = "1.95"
 
 [lints]
 workspace = true
 
 [dependencies]
+craft-ui = { workspace = true }
 pdfcraft-fonts = { workspace = true }
 pdfcraft-engine = { workspace = true }
 pdfcraft-render = { workspace = true }

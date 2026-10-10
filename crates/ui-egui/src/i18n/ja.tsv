@@ -2141,3 +2141,21 @@ signature pad	Type	入力
 	The field {name} no longer exists.	フィールド {name} はもう存在しません。
 	A selected field has no widget on any page, so the fields can't be edited together.	選択したフィールドの一つがどのページにもウィジェットを持たないため、まとめて編集できません。
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	（{n} 件は描画できる最大サイズの {dpi} dpi で書き出しました）
+	Zoom in / out (also pinch or ⌘-scroll)	拡大／縮小（ピンチ操作や ⌘＋スクロールも使用可能）
+	Open a PDF (⌘O)	PDF を開く（⌘O）
+	Print (⌘P)	印刷（⌘P）
+	Document properties (⌘D)	文書のプロパティ（⌘D）
+	Zoom out (⌘−)	縮小（⌘−）
+	Zoom in (⌘+)	拡大（⌘+）
+	Rotate view clockwise (⇧⌘+)	表示を時計回りに回転（⇧⌘+）
+	New bookmark (⌘B)	新しいしおり（⌘B）
+	Previous (⇧⌘G)	前へ（⇧⌘G）
+	Next (⌘G)	次へ（⌘G）
+	Reset panel layout	パネル配置をリセット
+	Float panel	パネルをフロート化
+	Move to group	グループに移動
+	Panels	パネル
+	Resize panels	パネルのサイズを変更
+	Resize panel window	パネルウィンドウのサイズを変更
+	Tools	ツール
+	Inspector	インスペクター

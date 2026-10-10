@@ -2139,3 +2139,22 @@ action wizard	Start	Indítás
 	The field {name} no longer exists.	A(z) {name} mező már nem létezik.
 	A selected field has no widget on any page, so the fields can't be edited together.	Az egyik kijelölt mezőnek egyik oldalon sincs widgetje, ezért a mezők nem szerkeszthetők együtt.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} {dpi} dpi felbontással, a legnagyobb méretben, amelyben megjeleníthetők)
+	Zoom in / out (also pinch or ⌘-scroll)	Nagyítás / kicsinyítés (csípéssel vagy ⌘-görgetéssel is)
+	Open a PDF (⌘O)	PDF megnyitása (⌘O)
+	Print (⌘P)	Nyomtatás (⌘P)
+	Document properties (⌘D)	Dokumentum tulajdonságai (⌘D)
+	Zoom out (⌘−)	Kicsinyítés (⌘−)
+	Zoom in (⌘+)	Nagyítás (⌘+)
+	Rotate view clockwise (⇧⌘+)	Nézet forgatása az óramutató járásával megegyezően (⇧⌘+)
+	New bookmark (⌘B)	Új könyvjelző (⌘B)
+	Previous (⇧⌘G)	Előző (⇧⌘G)
+	Next (⌘G)	Következő (⌘G)
+	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	A szövegfelismerés nincs telepítve: hiányoznak a modelljei (futtasd a `cargo xtask models` parancsot, vagy állítsd be a PDFCRAFT_MODELS változót).
+	Reset panel layout	Panelelrendezés visszaállítása
+	Float panel	Panel lebegtetése
+	Move to group	Áthelyezés csoportba
+	Panels	Panelek
+	Resize panels	Panelek átméretezése
+	Resize panel window	Panelablak átméretezése
+	Tools	Eszközök
+	Inspector	Tulajdonságvizsgáló

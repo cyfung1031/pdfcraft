@@ -3,6 +3,9 @@
 Working instructions for agents and contributors are in `AGENTS.md` and `CLAUDE.md`. This page
 collects what the desktop app reads from its environment and where it writes its diagnostics.
 
+The UI crate and complete desktop/web builds require Rust 1.95 or later, matching the pinned
+`craft-ui` dependency. The workspace's core-crate minimum is unchanged.
+
 ## Logs
 
 The desktop app writes its `log` records to standard error and to `logs/pdfcraft.log` in its

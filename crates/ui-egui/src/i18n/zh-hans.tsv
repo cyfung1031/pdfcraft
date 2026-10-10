@@ -2105,3 +2105,22 @@
 	The field {name} no longer exists.	字段 {name} 已不存在。
 	A selected field has no widget on any page, so the fields can't be edited together.	某个所选字段在任何页面上都没有控件，因此无法一起编辑这些字段。
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	（{n} 张以可绘制的最大尺寸 {dpi} dpi 导出）
+	Zoom out (⌘−)	缩小 (⌘−)
+	Zoom in (⌘+)	放大 (⌘+)
+	Rotate view clockwise (⇧⌘+)	顺时针旋转视图 (⇧⌘+)
+	Open a PDF (⌘O)	打开 PDF (⌘O)
+	Print (⌘P)	打印 (⌘P)
+	Document properties (⌘D)	文档属性 (⌘D)
+	New bookmark (⌘B)	新建书签 (⌘B)
+	Previous (⇧⌘G)	上一个 (⇧⌘G)
+	Next (⌘G)	下一个 (⌘G)
+	Zoom in / out (also pinch or ⌘-scroll)	放大/缩小（也可用捏合或 ⌘+滚轮）
+	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	尚未安装文本识别功能：缺少模型（请运行 `cargo xtask models` 或设置 PDFCRAFT_MODELS）。
+	Reset panel layout	重置面板布局
+	Float panel	浮动面板
+	Move to group	移到组中
+	Panels	面板
+	Resize panels	调整面板大小
+	Resize panel window	调整面板窗口大小
+	Tools	工具
+	Inspector	检查器

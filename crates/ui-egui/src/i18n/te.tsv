@@ -2072,3 +2072,22 @@ action wizard	Start	ప్రారంభించు
 	The field {name} no longer exists.	{name} ఫీల్డ్ ఇకపై లేదు.
 	A selected field has no widget on any page, so the fields can't be edited together.	ఎంచుకున్న ఒక ఫీల్డ్‌కు ఏ పేజీలోనూ విడ్జెట్ లేదు, కాబట్టి ఫీల్డ్‌లను కలిపి సవరించలేము.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} {dpi} dpi వద్ద, అవి గీయగల అతిపెద్ద పరిమాణం)
+	Zoom in / out (also pinch or ⌘-scroll)	జూమ్ పెంచు / తగ్గించు (పించ్ లేదా ⌘-స్క్రోల్‌తో కూడా)
+	Open a PDF (⌘O)	PDFను తెరువు (⌘O)
+	Print (⌘P)	ముద్రించు (⌘P)
+	Document properties (⌘D)	పత్ర లక్షణాలు (⌘D)
+	Zoom out (⌘−)	జూమ్ తగ్గించు (⌘−)
+	Zoom in (⌘+)	జూమ్ పెంచు (⌘+)
+	Rotate view clockwise (⇧⌘+)	వీక్షణను సవ్యదిశలో తిప్పు (⇧⌘+)
+	New bookmark (⌘B)	కొత్త బుక్‌మార్క్ (⌘B)
+	Previous (⇧⌘G)	మునుపటి (⇧⌘G)
+	Next (⌘G)	తదుపరి (⌘G)
+	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	టెక్స్ట్ గుర్తింపు ఇన్‌స్టాల్ కాలేదు: దాని మోడల్‌లు లేవు (`cargo xtask models` అమలు చేయండి, లేదా PDFCRAFT_MODELS సెట్ చేయండి).
+	Reset panel layout	ప్యానెల్ అమరికను రీసెట్ చేయి
+	Float panel	ప్యానెల్‌ను తేలియాడేలా చేయి
+	Move to group	సమూహానికి తరలించు
+	Panels	ప్యానెల్‌లు
+	Resize panels	ప్యానెల్‌ల పరిమాణం మార్చు
+	Resize panel window	ప్యానెల్ విండో పరిమాణం మార్చు
+	Tools	సాధనాలు
+	Inspector	పరిశీలకుడు

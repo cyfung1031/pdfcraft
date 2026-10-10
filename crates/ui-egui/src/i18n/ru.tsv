@@ -2054,3 +2054,22 @@
 	The field {name} no longer exists.	Поле {name} больше не существует.
 	A selected field has no widget on any page, so the fields can't be edited together.	У одного из выбранных полей нет виджета ни на одной странице, поэтому поля нельзя изменить вместе.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} — с разрешением {dpi} dpi, максимальным, с каким их можно отрисовать)
+	Zoom in / out (also pinch or ⌘-scroll)	Масштаб (также щипок или ⌘-прокрутка)
+	Open a PDF (⌘O)	Открыть PDF (⌘O)
+	Print (⌘P)	Печать (⌘P)
+	Document properties (⌘D)	Свойства документа (⌘D)
+	Zoom out (⌘−)	Уменьшить (⌘−)
+	Zoom in (⌘+)	Увеличить (⌘+)
+	Rotate view clockwise (⇧⌘+)	Повернуть вид по часовой стрелке (⇧⌘+)
+	New bookmark (⌘B)	Новая закладка (⌘B)
+	Previous (⇧⌘G)	Предыдущее (⇧⌘G)
+	Next (⌘G)	Следующее (⌘G)
+	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	Распознавание текста не установлено: отсутствуют модели (запустите `cargo xtask models` или задайте PDFCRAFT_MODELS).
+	Reset panel layout	Сбросить расположение панелей
+	Float panel	Сделать панель плавающей
+	Move to group	Переместить в группу
+	Panels	Панели
+	Resize panels	Изменить размеры панелей
+	Resize panel window	Изменить размер окна панели
+	Tools	Инструменты
+	Inspector	Инспектор

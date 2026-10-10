@@ -2141,3 +2141,22 @@ action wizard	Start	Starten
 	The field {name} no longer exists.	Das Feld {name} existiert nicht mehr.
 	A selected field has no widget on any page, so the fields can't be edited together.	Ein ausgewähltes Feld hat auf keiner Seite ein Widget, daher können die Felder nicht gemeinsam bearbeitet werden.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} mit {dpi} dpi, der größten Auflösung, in der sie gezeichnet werden können)
+	Zoom in / out (also pinch or ⌘-scroll)	Vergrößern / Verkleinern (auch per Pinch-Geste oder ⌘ + Scrollen)
+	Open a PDF (⌘O)	PDF öffnen (⌘O)
+	Print (⌘P)	Drucken (⌘P)
+	Document properties (⌘D)	Dokumenteigenschaften (⌘D)
+	Zoom out (⌘−)	Verkleinern (⌘−)
+	Zoom in (⌘+)	Vergrößern (⌘+)
+	Rotate view clockwise (⇧⌘+)	Ansicht im Uhrzeigersinn drehen (⇧⌘+)
+	New bookmark (⌘B)	Neues Lesezeichen (⌘B)
+	Previous (⇧⌘G)	Vorheriger (⇧⌘G)
+	Next (⌘G)	Nächster (⌘G)
+	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	Die Texterkennung ist nicht installiert, ihre Modelle fehlen (führe `cargo xtask models` aus oder setze PDFCRAFT_MODELS).
+	Reset panel layout	Bereichsanordnung zurücksetzen
+	Float panel	Bereich frei platzieren
+	Move to group	In Gruppe verschieben
+	Panels	Bereiche
+	Resize panels	Bereichsgrößen ändern
+	Resize panel window	Größe des Bereichsfensters ändern
+	Tools	Werkzeuge
+	Inspector	Inspektor

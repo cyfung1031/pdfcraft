@@ -2103,3 +2103,22 @@ action wizard	Start	Старт
 	The field {name} no longer exists.	Полето {name} вече не съществува.
 	A selected field has no widget on any page, so the fields can't be edited together.	Едно от избраните полета няма елемент на нито една страница, затова полетата не могат да се редактират заедно.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} с {dpi} dpi, най-голямата резолюция, с която могат да бъдат изобразени)
+	Zoom out (⌘−)	Намали мащаба (⌘−)
+	Zoom in (⌘+)	Увеличи мащаба (⌘+)
+	Rotate view clockwise (⇧⌘+)	Завърти изгледа по часовниковата стрелка (⇧⌘+)
+	Open a PDF (⌘O)	Отвори PDF файл (⌘O)
+	Print (⌘P)	Печат (⌘P)
+	Document properties (⌘D)	Свойства на документа (⌘D)
+	New bookmark (⌘B)	Нова отметка (⌘B)
+	Previous (⇧⌘G)	Предишно (⇧⌘G)
+	Next (⌘G)	Следващо (⌘G)
+	Zoom in / out (also pinch or ⌘-scroll)	Увеличи / намали (също с щипване или ⌘ + превъртане)
+	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	Разпознаването на текст не е инсталирано: моделите му липсват (изпълнете `cargo xtask models` или задайте PDFCRAFT_MODELS).
+	Reset panel layout	Възстанови оформлението на панелите
+	Float panel	Откачи панела
+	Move to group	Премести в група
+	Panels	Панели
+	Resize panels	Преоразмери панелите
+	Resize panel window	Преоразмери прозореца на панела
+	Tools	Инструменти
+	Inspector	Инспектор

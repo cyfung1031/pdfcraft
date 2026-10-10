@@ -2141,3 +2141,22 @@ signature pad	Type	Saisir
 	The field {name} no longer exists.	Le champ {name} n'existe plus.
 	A selected field has no widget on any page, so the fields can't be edited together.	Un champ sélectionné n'a de widget sur aucune page : les champs ne peuvent pas être modifiés ensemble.
 	 ({n} at {dpi} dpi, the largest size they can be drawn at)	 ({n} à {dpi} ppp, la plus grande taille possible pour les dessiner)
+	Zoom in / out (also pinch or ⌘-scroll)	Zoom avant / arrière (aussi pincer ou ⌘-défilement)
+	Open a PDF (⌘O)	Ouvrir un PDF (⌘O)
+	Print (⌘P)	Imprimer (⌘P)
+	Document properties (⌘D)	Propriétés du document (⌘D)
+	Zoom out (⌘−)	Zoom arrière (⌘−)
+	Zoom in (⌘+)	Zoom avant (⌘+)
+	Rotate view clockwise (⇧⌘+)	Pivoter l'affichage vers la droite (⇧⌘+)
+	New bookmark (⌘B)	Nouveau signet (⌘B)
+	Previous (⇧⌘G)	Précédent (⇧⌘G)
+	Next (⌘G)	Suivant (⌘G)
+	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	La reconnaissance de texte n'est pas installée : ses modèles sont absents (exécutez `cargo xtask models`, ou définissez PDFCRAFT_MODELS).
+	Reset panel layout	Réinitialiser la disposition des panneaux
+	Float panel	Détacher le panneau
+	Move to group	Déplacer vers un groupe
+	Panels	Panneaux
+	Resize panels	Redimensionner les panneaux
+	Resize panel window	Redimensionner la fenêtre du panneau
+	Tools	Outils
+	Inspector	Inspecteur

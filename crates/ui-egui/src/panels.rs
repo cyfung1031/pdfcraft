@@ -16,22 +16,16 @@ fn hue(g: &ToolGroup) -> Color32 {
 
 pub fn left_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
-    egui::Panel::left("tool_panel")
-        .resizable(false)
-        .exact_size(272.0)
-        .frame(
-            egui::Frame::NONE
-                .fill(t.panel)
-                .inner_margin(egui::Margin { left: 14, right: 10, top: 12, bottom: 10 })
-                .stroke(Stroke::new(1.0, t.divider)),
-        )
-        .show(ui, |ui| match app.left {
+    egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin { left: 14, right: 10, top: 12, bottom: 10 }).stroke(Stroke::new(1.0, t.divider)).show(
+        ui,
+        |ui| match app.left {
             LeftPanel::AllTools => all_tools(app, ui, &t),
             LeftPanel::Tool(id) => match catalog::group(id) {
                 Some(g) => tool_detail(app, ui, &t, g),
                 None => app.left = LeftPanel::AllTools,
             },
-        });
+        },
+    );
 }
 
 fn panel_header(ui: &mut egui::Ui, t: &Tokens, title: &str, back: bool) -> (bool, bool) {
@@ -414,16 +408,10 @@ pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
         let comment_allowed = doc.allows_annotation();
         // A dialog or the palette owns the keyboard: the panel leaves Escape to it.
         let modal = app.dialog.is_some() || app.palette_open;
-        egui::Panel::right("right_panel")
-            .resizable(true)
-            .default_size(330.0)
-            .size_range(260.0..=520.0)
-            .frame(
-                egui::Frame::NONE
-                    .fill(t.panel)
-                    .inner_margin(egui::Margin { left: 14, right: 12, top: 12, bottom: 8 })
-                    .stroke(Stroke::new(1.0, t.divider)),
-            )
+        egui::Frame::NONE
+            .fill(t.panel)
+            .inner_margin(egui::Margin { left: 14, right: 12, top: 12, bottom: 8 })
+            .stroke(Stroke::new(1.0, t.divider))
             .show(ui, |ui| {
                 let (title, count) = match panel {
                     RightPanel::Comments => ("Comments", Some(crate::comments_panel::count(info))),
