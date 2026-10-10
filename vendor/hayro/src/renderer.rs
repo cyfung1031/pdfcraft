@@ -695,7 +695,9 @@ impl Renderer {
                 (source_width, source_height)
             }
         };
-        if requested_resize && self.in_type3_glyph {
+        // PdfCraft patch (#624): High is bicubic and would blend the nearest pre-resize of an image
+        // that did not request interpolation, so only interpolated glyph images are promoted.
+        if requested_resize && self.in_type3_glyph && interpolate {
             quality = ImageQuality::High;
         }
         let needs_resize = (new_width, new_height) != (source_width, source_height);

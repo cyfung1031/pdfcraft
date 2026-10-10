@@ -4076,6 +4076,50 @@ trailer << /Root 1 0 R >>
         assert_eq!(page.rgba.as_chunks::<4>().0.to_vec(), expected);
     }
 
+    /// Type 3 glyph images used to be sampled bicubically (`ImageQuality::High`) whatever their
+    /// `/Interpolate`, which blends the nearest pre-resize back in. The glyph is 4.6 × 2.3 pixels
+    /// and its image pre-resizes to 5 × 3, so the final draw samples fractionally and bicubic
+    /// filtering would blend palette colours. Interior pixels must stay palette colours unless the
+    /// image asks for interpolation.
+    #[test]
+    fn non_interpolated_type3_glyph_images_are_not_smoothed_when_minified() {
+        let palette: [[u8; 3]; 8] = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], [0, 255, 255]];
+        let data = hex(&block_source(palette).concat());
+        let render = |interp: &str| {
+            let content = "BT /F1 1 Tf 0 0.7 Td (A) Tj ET";
+            let glyph = "4.6 0 d0 q 4.6 0 0 2.3 0 0 cm /Im0 Do Q";
+            let pdf = format!(
+                "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+                 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+                 3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 5 3] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n\
+                 4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+                 5 0 obj << /Type /Font /Subtype /Type3 /FontBBox [0 0 10 10] /FontMatrix [1 0 0 1 0 0] /FirstChar 65 /LastChar 65 /Widths [5] /Encoding << /Differences [65 /a] >> /CharProcs << /a 6 0 R >> /Resources << /XObject << /Im0 7 0 R >> >> >> endobj\n\
+                 6 0 obj << /Length {} >> stream\n{glyph}\nendstream endobj\n\
+                 7 0 obj << /Type /XObject /Subtype /Image /Width 8 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 {interp}/Filter /ASCIIHexDecode /Length {} >> stream\n{data}>\nendstream endobj\n\
+                 trailer << /Root 1 0 R >>\n%%EOF\n",
+                content.len(),
+                glyph.len(),
+                data.len() + 1
+            );
+            let mut renderer = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+            let page = renderer.render(RenderRequest { page: 0, kind: RequestKind::Pixels, scale: 1.0, ..Default::default() });
+            assert!(page.error.is_none(), "{:?}", page.error);
+            assert_eq!((page.width, page.height), (5, 3));
+            page
+        };
+        // The glyph fully covers columns 0–3 and rows 0–1.
+        let interior = |p: &RenderedPage| -> Vec<[u8; 3]> {
+            (0..2).flat_map(|y| (0..4).map(move |x| (y * 5 + x) * 4)).map(|i| [p.rgba[i], p.rgba[i + 1], p.rgba[i + 2]]).collect()
+        };
+
+        let omitted = render("");
+        for px in interior(&omitted) {
+            assert!(palette.contains(&px), "non-interpolated glyph image was smoothed to {px:?}");
+        }
+        let enabled = render("/Interpolate true ");
+        assert!(interior(&enabled).iter().any(|px| !palette.contains(px)), "/Interpolate true glyph image should still be sampled bicubically");
+    }
+
     /// From `cargo xtask fuzz`: a CID font whose /W range spans every u32 inserted billions of
     /// widths (vendored hayro-interpret patch: `MAX_CID`). Must finish quickly.
     #[test]
