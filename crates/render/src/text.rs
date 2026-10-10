@@ -606,6 +606,9 @@ impl Seg {
 const RUN_COLLISION: f32 = 0.25;
 /// A run that starts inside the runs before it by more than this fraction of the line height starts a new word.
 const RUN_OVERLAP_SPACE: f32 = 0.5;
+/// Earlier runs with the same key that a run is checked against for a redraw, newest first. A run past this limit is kept,
+/// so a page costs at most this many checks per run, however many runs share a key.
+const REDRAW_CANDIDATES: usize = 32;
 /// Pair tests that the collision sweep may make per glyph of a segment. Ordinary text overlaps each glyph with about one
 /// neighbour, so it stays far below this. A segment that needs more is dense, and [`collide`] joins its runs instead.
 const COLLIDE_PAIRS_PER_GLYPH: usize = 16;
@@ -942,7 +945,7 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
     // A run that redraws an earlier run at the same place (doubled or shadowed text) is dropped, as a doubled glyph is
     // above. Runs are keyed by a fingerprint of their glyph texts and a grid cell a fifth of a line high. A key leads to
     // the latest retained run with it, and `older[k]` links each retained run to the previous one with the same key, so
-    // every earlier candidate is checked. Both exist only for this pass.
+    // the earlier candidates are checked newest first, up to `REDRAW_CANDIDATES`. Both exist only for this pass.
     let retained = {
         let candidates = segs.iter().filter(|s| s.first.len() >= 2).count();
         let mut latest: HashMap<(u64, i32, i32), usize> = HashMap::with_capacity(candidates);
@@ -954,11 +957,16 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
                 let tol = 0.2 * segs[i].h;
                 let (cx, cy_) = ((glyphs[run.start].rect[0] / tol).floor() as i32, (glyphs[run.start].rect[1] / tol).floor() as i32);
                 let fp = fingerprint(&glyphs, run);
+                let mut checks = REDRAW_CANDIDATES;
                 let twin = (-1..=1i32).any(|dx| {
                     (-1..=1i32).any(|dy| {
                         let mut link = latest.get(&(fp, cx.saturating_add(dx), cy_.saturating_add(dy))).copied();
                         while let Some(k) = link {
                             let Some(prev) = segs.get(k) else { break };
+                            if checks == 0 {
+                                return false;
+                            }
+                            checks -= 1;
                             if redraws(&glyphs, prev.first, run) {
                                 return true;
                             }
@@ -1629,6 +1637,36 @@ mod tests {
             words.push(text);
         }
         assert_eq!(layout(v).plain_text(), words.join(" "));
+    }
+
+    #[test]
+    fn a_redraw_is_found_among_look_alike_runs_up_to_the_candidate_limit() {
+        // 40 runs of "abc" share a text and a grid cell, but each differs from every other by more than a fifth of a
+        // line in its second or third glyph, so none redraws another. A run of "abc" at the place of the newest run is
+        // found, as the newest candidates are checked first. One at the place of the oldest run is 40 candidates back,
+        // past the limit, so it is kept.
+        let abc = |v: &mut Vec<TextGlyph>, k: usize| {
+            let (b, c) = (16.0 + 2.5 * (k % 4) as f32, 22.0 + 2.5 * (k / 4) as f32);
+            v.push(g("a", 10.0, 10.0, 16.0));
+            v.push(g("b", b, 10.0, b + 6.0));
+            v.push(g("c", c, 10.0, c + 6.0));
+        };
+        let far = |v: &mut Vec<TextGlyph>| {
+            for _ in 0..4 {
+                let x = 500.0 + 10.0 * v.len() as f32;
+                v.push(g("|", x, 10.0, x + 6.0));
+            }
+        };
+        let mut v = Vec::new();
+        for k in 0..40 {
+            abc(&mut v, k);
+            far(&mut v);
+        }
+        abc(&mut v, 39);
+        far(&mut v);
+        assert_eq!(layout(v.clone()).glyphs.iter().filter(|g| g.text == "a").count(), 40);
+        abc(&mut v, 0);
+        assert_eq!(layout(v).glyphs.iter().filter(|g| g.text == "a").count(), 41);
     }
 
     #[test]
