@@ -156,6 +156,7 @@ struct OptionSpec {
     takes_value: bool,
 }
 
+/// Refuse a long option `command` doesn't take (a misspelling) before any file is read.
 fn validate_options(command: &str, args: &[String], specs: &[OptionSpec]) -> Result<(), CliError> {
     let mut i = 0;
     while let Some(arg) = args.get(i) {
@@ -163,13 +164,9 @@ fn validate_options(command: &str, args: &[String], specs: &[OptionSpec]) -> Res
             let Some(spec) = specs.iter().find(|spec| spec.name == arg) else {
                 return Err(format!("{command}: unknown option --{name}").into());
             };
-            i += 1;
-            if spec.takes_value {
-                if args.get(i).is_none() {
-                    return Err(format!("{command}: {arg} needs a value").into());
-                }
-                i += 1;
-            }
+            // A missing or malformed value is left to the command, which reports it in its own
+            // terms (`text` and `extract` explain what a page value must be).
+            i += if spec.takes_value { 2 } else { 1 };
         } else {
             i += 1;
         }
