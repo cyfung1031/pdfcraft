@@ -541,15 +541,267 @@ fn is_cjk(c: char) -> bool {
     matches!(c as u32, 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0x20000..=0x3134F | 0x1100..=0x11FF)
 }
 
+/// Glyphs `start..end` of the glyph list [`arrange`] lays out, drawn one after another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Run {
+    start: usize,
+    end: usize,
+}
+
+impl Run {
+    fn range(self) -> std::ops::Range<usize> {
+        self.start..self.end
+    }
+}
+
+/// Marks an absent link in a union-find or run list.
+const NONE: usize = usize::MAX;
+
+/// A segment: runs drawn on one baseline, placed together. Its glyph order is worked out when it is emitted, so a
+/// segment holds run ranges and geometry only.
 struct Seg {
-    idx: Vec<usize>,
+    /// The first run. Merged segments keep their other runs in `extra`.
+    first: Run,
+    /// The other runs of a merged segment. Boxed, and absent for most segments.
+    extra: Option<Box<SegExtra>>,
     bbox: [f32; 4],
     h: f32,
 }
 
+#[derive(Default)]
+struct SegExtra {
+    more: Vec<Run>,
+}
+
 impl Seg {
+    fn new(first: Run, bbox: [f32; 4], h: f32) -> Self {
+        Seg { first, extra: None, bbox, h }
+    }
+
     fn cy(&self) -> f32 {
         (self.bbox[1] + self.bbox[3]) / 2.0
+    }
+
+    fn runs(&self) -> impl Iterator<Item = Run> + '_ {
+        std::iter::once(self.first).chain(self.extra.iter().flat_map(|e| e.more.iter().copied()))
+    }
+
+    fn merge(&mut self, other: Seg) {
+        union(&mut self.bbox, &other.bbox);
+        self.h = self.h.max(other.h);
+        let extra = self.extra.get_or_insert_with(Default::default);
+        extra.more.push(other.first);
+        if let Some(o) = other.extra {
+            extra.more.extend(o.more);
+        }
+    }
+}
+
+/// Two glyphs of different runs that overlap by more than this fraction of the line height collide.
+const RUN_COLLISION: f32 = 0.25;
+/// A run that starts inside the runs before it by more than this fraction of the line height starts a new word.
+const RUN_OVERLAP_SPACE: f32 = 0.5;
+
+/// Reusable buffers, so a page allocates them once rather than per segment. Glyph placement works in them, one
+/// segment at a time, when the segment is emitted.
+#[derive(Default)]
+struct Scratch {
+    /// The glyphs of the text runs, each with its run, in x order.
+    owner: Vec<(usize, usize)>,
+    /// The text runs of the segment (runs that are not all zero-width).
+    text: Vec<Run>,
+    /// The glyphs of the zero-width runs, in run order.
+    marks: Vec<usize>,
+    /// Union-find parents over `text`, and for each root the list of its runs through `next`.
+    parent: Vec<usize>,
+    head: Vec<usize>,
+    next: Vec<usize>,
+    /// The runs of one colliding component, by left edge.
+    rows: Vec<Row>,
+    /// The glyphs of one colliding component: each run's glyphs in x order, in run order.
+    group: Vec<usize>,
+    /// The units to place, and their glyphs in `flat`.
+    units: Vec<Unit>,
+    flat: Vec<usize>,
+    /// The current segment's glyphs in visual reading order, and its forced word breaks.
+    placed: Vec<usize>,
+    breaks: Vec<usize>,
+    /// The gaps between the current segment's glyphs, and its glyphs in logical order when it has right-to-left text.
+    gaps: Vec<f32>,
+    logical: Vec<usize>,
+}
+
+/// One run of a colliding component.
+struct Row {
+    left: f32,
+    right: f32,
+    /// The run's first glyph in content order, which is its smallest index.
+    first: usize,
+    /// The run's glyph with the smallest x, where a word break is recorded.
+    lead: usize,
+    /// The run's glyphs in `Scratch::group`.
+    glyphs: std::ops::Range<usize>,
+}
+
+/// A part of a segment placed as one: a free glyph, or a colliding component.
+struct Unit {
+    left: f32,
+    first: usize,
+    /// The unit's glyphs in `Scratch::flat`.
+    glyphs: std::ops::Range<usize>,
+}
+
+fn union_find(parent: &mut [usize], mut r: usize) -> usize {
+    while parent[r] != r {
+        parent[r] = parent[parent[r]];
+        r = parent[r];
+    }
+    r
+}
+
+/// Puts a segment's glyphs in visual reading order into `sc.placed`, and its forced word breaks into `sc.breaks`.
+///
+/// Glyphs are placed by x. Runs that collide, meaning that glyphs of different runs overprint each other, stay whole
+/// and are placed by their left edge. Runs that only interleave along the line, such as symbols between letters, keep
+/// their glyph-by-glyph order, so the common case is one sort. A run of zero-width glyphs (a combining mark) has no
+/// extent of its own, so it goes next to the glyph it starts at.
+fn place_glyphs(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, s: &Seg, sc: &mut Scratch) {
+    let x0 = |i: usize| glyphs[i].rect[0];
+    let zero_width = |i: usize| glyphs[i].rect[2] - glyphs[i].rect[0] <= 0.05 * height(i);
+    sc.text.clear();
+    sc.marks.clear();
+    sc.placed.clear();
+    sc.breaks.clear();
+    for run in s.runs() {
+        if run.range().all(&zero_width) {
+            sc.marks.extend(run.range());
+        } else {
+            sc.text.push(run);
+        }
+    }
+    if sc.text.len() <= 1 {
+        // A single run cannot collide with itself: its glyphs only need sorting by x.
+        sc.placed.extend(sc.text.iter().flat_map(|run| run.range()));
+        sc.placed.sort_unstable_by(|a, b| x0(*a).total_cmp(&x0(*b)).then(a.cmp(b)));
+    } else {
+        collide(glyphs, height, s.h, sc);
+    }
+    sc.marks.sort_by(|a, b| x0(*a).total_cmp(&x0(*b)));
+    for &m in &sc.marks {
+        let at = sc.placed.iter().position(|&j| x0(j) > x0(m)).unwrap_or(sc.placed.len());
+        sc.placed.insert(at, m);
+    }
+}
+
+/// `place_glyphs` for a segment of two or more text runs. `h` is the segment's line height.
+fn collide(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, h: f32, sc: &mut Scratch) {
+    let x0 = |i: usize| glyphs[i].rect[0];
+    let runs = sc.text.len();
+    sc.owner.clear();
+    for (r, run) in sc.text.iter().enumerate() {
+        sc.owner.extend(run.range().map(|i| (i, r)));
+    }
+    sc.owner.sort_unstable_by(|a, b| x0(a.0).total_cmp(&x0(b.0)).then(a.0.cmp(&b.0)));
+    sc.parent.clear();
+    sc.parent.extend(0..runs);
+    let mut collided = false;
+    for a in 0..sc.owner.len() {
+        let (i, ri) = sc.owner[a];
+        let (x1, hi) = (glyphs[i].rect[2], height(i));
+        for b in a + 1..sc.owner.len() {
+            let (j, rj) = sc.owner[b];
+            if x0(j) >= x1 {
+                break;
+            }
+            let (ra, rb) = (union_find(&mut sc.parent, ri), union_find(&mut sc.parent, rj));
+            let overlap = x1.min(glyphs[j].rect[2]) - x0(j);
+            if ra != rb && overlap > RUN_COLLISION * hi.min(height(j)) {
+                sc.parent[ra] = rb;
+                collided = true;
+            }
+        }
+    }
+    if !collided {
+        sc.placed.extend(sc.owner.iter().map(|&(i, _)| i));
+        return;
+    }
+
+    // Link each component's runs, so they can be walked without a map.
+    sc.head.clear();
+    sc.head.resize(runs, NONE);
+    sc.next.clear();
+    sc.next.resize(runs, NONE);
+    for r in 0..runs {
+        let root = union_find(&mut sc.parent, r);
+        sc.next[r] = sc.head[root];
+        sc.head[root] = r;
+    }
+    sc.units.clear();
+    sc.flat.clear();
+    for root in 0..runs {
+        if union_find(&mut sc.parent, root) != root {
+            continue;
+        }
+        let head = sc.head[root];
+        if sc.next[head] == NONE {
+            // A run that collides with nothing is placed glyph by glyph.
+            for i in sc.text[head].range() {
+                let at = sc.flat.len();
+                sc.flat.push(i);
+                sc.units.push(Unit { left: x0(i), first: i, glyphs: at..at + 1 });
+            }
+            continue;
+        }
+        sc.rows.clear();
+        sc.group.clear();
+        let mut m = head;
+        while m != NONE {
+            let run = sc.text[m];
+            let start = sc.group.len();
+            sc.group.extend(run.range());
+            sc.group[start..].sort_unstable_by(|a, b| x0(*a).total_cmp(&x0(*b)).then(a.cmp(b)));
+            let left = sc.group[start..].iter().map(|&i| x0(i)).fold(f32::INFINITY, f32::min);
+            let right = sc.group[start..].iter().map(|&i| glyphs[i].rect[2]).fold(f32::NEG_INFINITY, f32::max);
+            let lead = sc.group[start];
+            sc.rows.push(Row { left, right, first: run.start, lead, glyphs: start..sc.group.len() });
+            m = sc.next[m];
+        }
+        sc.rows.sort_unstable_by(|a, b| a.left.total_cmp(&b.left).then(a.first.cmp(&b.first)));
+        let start = sc.flat.len();
+        let mut reach = f32::NEG_INFINITY;
+        for row in &sc.rows {
+            if row.left < reach - h * RUN_OVERLAP_SPACE {
+                sc.breaks.push(row.lead);
+            }
+            reach = reach.max(row.right);
+            sc.flat.extend_from_slice(&sc.group[row.glyphs.clone()]);
+        }
+        let left = sc.rows.iter().map(|r| r.left).fold(f32::INFINITY, f32::min);
+        let first = sc.rows.iter().map(|r| r.first).min().unwrap_or(0);
+        sc.units.push(Unit { left, first, glyphs: start..sc.flat.len() });
+    }
+    sc.units.sort_unstable_by(|a, b| a.left.total_cmp(&b.left).then(a.first.cmp(&b.first)));
+    for unit in &sc.units {
+        sc.placed.extend_from_slice(&sc.flat[unit.glyphs.clone()]);
+    }
+}
+
+/// Reverses each right-to-left span of `idx` (visual → logical order). A space between two right-to-left glyphs
+/// belongs to the span.
+fn reverse_rtl(glyphs: &[&TextGlyph], idx: &mut [usize]) {
+    let rtl = |i: usize| glyphs[i].text.chars().any(is_rtl);
+    let mut k = 0;
+    while k < idx.len() {
+        if rtl(idx[k]) {
+            let mut e = k;
+            while e + 1 < idx.len() && (rtl(idx[e + 1]) || (glyphs[idx[e + 1]].text.trim().is_empty() && e + 2 < idx.len() && rtl(idx[e + 2]))) {
+                e += 1;
+            }
+            idx[k..=e].reverse();
+            k = e + 1;
+        } else {
+            k += 1;
+        }
     }
 }
 
@@ -603,22 +855,22 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
     let height = |i: usize| (glyphs[i].rect[3] - glyphs[i].rect[1]).max(0.1);
     let cy = |i: usize| (glyphs[i].rect[1] + glyphs[i].rect[3]) / 2.0;
 
-    // 1. Segments in content order.
+    // 1. Segments in content order. Every run is a range of consecutive glyphs.
     let mut segs: Vec<Seg> = Vec::new();
     for i in 0..n {
         let g = glyphs[i].rect;
         let cont = segs.last().is_some_and(|s| {
-            let Some(&p) = s.idx.last() else { return false };
+            let Some(p) = s.first.end.checked_sub(1) else { return false };
             let ph = height(p).min(height(i));
             let gap = g[0] - glyphs[p].rect[2];
             (cy(i) - cy(p)).abs() < ph * 0.5 && gap < ph * 3.0 && g[0] > glyphs[p].rect[0] - ph * 2.0
         });
         if cont && let Some(s) = segs.last_mut() {
-            s.idx.push(i);
+            s.first.end = i + 1;
             union(&mut s.bbox, &g);
             s.h = s.h.max(height(i));
         } else {
-            segs.push(Seg { idx: vec![i], bbox: g, h: height(i) });
+            segs.push(Seg::new(Run { start: i, end: i + 1 }, g, height(i)));
         }
     }
     // Merge same-baseline segments that nearly touch.
@@ -636,18 +888,12 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
                 if (sa.cy() - sb.cy()).abs() < h * 0.3 && (sa.h / sb.h - 1.0).abs() < 0.35 && gap < h * 1.2 {
                     let sb = segs.remove(b);
                     let a = if b < a { a - 1 } else { a };
-                    let sa = &mut segs[a];
-                    sa.idx.extend(sb.idx);
-                    union(&mut sa.bbox, &sb.bbox);
-                    sa.h = sa.h.max(sb.h);
+                    segs[a].merge(sb);
                     merged = true;
                     break 'outer;
                 }
             }
         }
-    }
-    for s in &mut segs {
-        s.idx.sort_by(|a, b| glyphs[*a].rect[0].total_cmp(&glyphs[*b].rect[0]));
     }
 
     // 2. Blocks.
@@ -693,55 +939,52 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
         block_order.push(pick);
     }
 
-    // 4. Emit glyphs in reading order with line numbers and word gaps.
+    // 4. Emit each segment in block order. Its glyphs are placed here, into scratch that every segment reuses, and
+    // appended straight to the output. Blocks and their order use only segment boxes, so placement can wait until now.
     let mut order: Vec<usize> = Vec::with_capacity(n);
-    let mut line_of = Vec::with_capacity(n);
-    let mut space_before = Vec::with_capacity(n);
+    let mut line_of: Vec<u32> = Vec::with_capacity(n);
+    let mut space_before: Vec<bool> = Vec::with_capacity(n);
     let mut line = 0u32;
+    let mut sc = Scratch::default();
     for b in block_order {
-        for si in &blocks[b].0 {
-            let s = &segs[*si];
-            let mut idx = s.idx.clone();
-            // Reverse right-to-left runs (visual → logical).
-            let rtl = |i: usize| glyphs[i].text.chars().any(is_rtl);
-            let mut k = 0;
-            while k < idx.len() {
-                if rtl(idx[k]) {
-                    let mut e = k;
-                    while e + 1 < idx.len()
-                        && (rtl(idx[e + 1]) || (glyphs[idx[e + 1]].text.trim().is_empty() && e + 2 < idx.len() && rtl(idx[e + 2])))
-                    {
-                        e += 1;
-                    }
-                    idx[k..=e].reverse();
-                    k = e + 1;
-                } else {
-                    k += 1;
-                }
-            }
+        for &si in &blocks[b].0 {
+            place_glyphs(&glyphs, &height, &segs[si], &mut sc);
+            let h = segs[si].h;
             // Word gaps relative to this line's typical letter gap (handles tracking).
-            let mut gaps: Vec<f32> = s.idx.windows(2).map(|w| glyphs[w[1]].rect[0] - glyphs[w[0]].rect[2]).collect();
-            gaps.sort_by(f32::total_cmp);
-            let typical = gaps.get(gaps.len() / 3).copied().unwrap_or(0.0).max(0.0);
-            let threshold = (typical + s.h * WORD_GAP).max(s.h * WORD_GAP);
-            let mut spaces = vec![false; idx.len()];
-            for w in 1..s.idx.len() {
-                let (p, c) = (s.idx[w - 1], s.idx[w]);
+            sc.gaps.clear();
+            sc.gaps.extend(sc.placed.windows(2).map(|w| glyphs[w[1]].rect[0] - glyphs[w[0]].rect[2]));
+            sc.gaps.sort_by(f32::total_cmp);
+            let typical = sc.gaps.get(sc.gaps.len() / 3).copied().unwrap_or(0.0).max(0.0);
+            let threshold = (typical + h * WORD_GAP).max(h * WORD_GAP);
+            // Right-to-left spans are reversed (visual → logical), and only then is a second copy made.
+            let has_rtl = sc.placed.iter().any(|&i| glyphs[i].text.chars().any(is_rtl));
+            if has_rtl {
+                sc.logical.clear();
+                sc.logical.extend_from_slice(&sc.placed);
+                reverse_rtl(&glyphs, &mut sc.logical);
+            }
+            let idx: &[usize] = if has_rtl { &sc.logical } else { &sc.placed };
+            let out_start = order.len();
+            order.extend_from_slice(idx);
+            line_of.resize(order.len(), line);
+            space_before.resize(order.len(), false);
+            for w in 1..sc.placed.len() {
+                let (p, c) = (sc.placed[w - 1], sc.placed[w]);
                 let gap = glyphs[c].rect[0] - glyphs[p].rect[2];
                 let (pt, ct) = (&glyphs[p].text, &glyphs[c].text);
-                let cjk = pt.chars().any(is_cjk) && ct.chars().any(is_cjk) && gap < s.h * 0.5;
-                let tight_cluster = (pt.chars().any(is_complex) || ct.chars().any(is_complex)) && gap < s.h * 0.6;
-                if gap > threshold && !cjk && !tight_cluster && !pt.trim().is_empty() && !ct.trim().is_empty() {
-                    // Mark the space before glyph `c` wherever it ended up after RTL reversal.
-                    if let Some(pos) = idx.iter().position(|x| *x == c.max(p)) {
-                        spaces[pos] = true;
+                let cjk = pt.chars().any(is_cjk) && ct.chars().any(is_cjk) && gap < h * 0.5;
+                let tight_cluster = (pt.chars().any(is_complex) || ct.chars().any(is_complex)) && gap < h * 0.6;
+                let run_start = sc.breaks.contains(&c);
+                if (gap > threshold || run_start) && !cjk && !tight_cluster && !pt.trim().is_empty() && !ct.trim().is_empty() {
+                    // Mark the space before glyph `c` wherever it ended up after RTL reversal. The first glyph of a
+                    // segment never takes a space.
+                    let mark = if run_start { c } else { c.max(p) };
+                    if let Some(slot) =
+                        idx.iter().position(|x| *x == mark).filter(|&pos| pos > 0).and_then(|pos| space_before.get_mut(out_start + pos))
+                    {
+                        *slot = true;
                     }
                 }
-            }
-            for (k, g) in idx.iter().enumerate() {
-                order.push(*g);
-                line_of.push(line);
-                space_before.push(k > 0 && spaces[k]);
             }
             line += 1;
         }
@@ -1119,5 +1362,89 @@ mod tests {
         assert_eq!(skewed.direction, [1.0, 0.0]);
         let slant = skewed.quad[3][0] - skewed.quad[0][0];
         assert!((slant - 10.0).abs() < 1e-3, "the skewed glyph's upright edge leans by half its 20 pt height: {skewed:?}");
+    }
+
+    /// The operators drawing each `(text, text matrix)` run in Helvetica 12 pt, one text object per run.
+    fn run_ops(runs: &[(&str, &str)]) -> String {
+        runs.iter().map(|(text, tm)| format!("BT /F1 12 Tf {tm} Tm ({text}) Tj ET\n")).collect()
+    }
+
+    fn page_glyphs(ops: &str) -> PageText {
+        extract_page(&text_page(ops), 0, &InterpreterSettings::default()).unwrap()
+    }
+
+    #[test]
+    fn runs_printed_over_each_other_stay_whole_at_any_angle() {
+        // Two runs that start at one point (exact overprint), that start 40 pt along and 3 pt down
+        // (shifted), and that are 14 pt apart (clear): at 0° and at 37°, each run comes out whole.
+        let tm = |angle: f32, along: f32, down: f32| {
+            let (s, c) = angle.to_radians().sin_cos();
+            let (x, y) = (100.0 + along * c - down * s, 200.0 + along * s + down * c);
+            format!("{c:.6} {s:.6} {:.6} {c:.6} {x:.4} {y:.4}", -s)
+        };
+        let (alpha, delta) = ("Alpha beta gamma", "Delta epsilon zeta");
+        for angle in [0.0, 37.0] {
+            for (along, down) in [(0.0, 0.0), (40.0, -3.0), (0.0, -14.0)] {
+                let text = page_glyphs(&run_ops(&[(alpha, &tm(angle, 0.0, 0.0)), (delta, &tm(angle, along, down))]));
+                for run in [alpha, delta] {
+                    assert!(
+                        !text.find(run).is_empty(),
+                        "{run:?} whole at {angle}° with the second run {along} pt along and {down} pt across: {:?}",
+                        text.plain_text()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_drawn_over_a_line_leaves_the_line_whole() {
+        // "XX" is drawn over the middle of "beta" after the line, so it is a run of its own that
+        // overlaps the line. The line must still come out as one whole line.
+        let text = page_glyphs(&run_ops(&[("Alpha beta gamma", "1 0 0 1 100 200"), ("XX", "1 0 0 1 136 200")]));
+        let flat = text.plain_text();
+        assert!(flat.contains("Alpha beta gamma"), "{flat:?}");
+        assert!(flat.contains("XX") && !flat.contains('\n'), "{flat:?}");
+    }
+
+    #[test]
+    fn a_combining_mark_drawn_last_stays_with_its_letter() {
+        // "ab", then a far-off "Z", then a zero-width combining mark at the start of "b". The mark
+        // is a run of its own, but it has no extent, so it goes back next to "b".
+        let mut v = Vec::new();
+        word(&mut v, "ab", 10.0, 10.0, 6.0);
+        v.push(g("Z", 200.0, 10.0, 206.0));
+        v.push(g("\u{301}", 16.0, 10.0, 16.0));
+        let t = layout(v);
+        assert_eq!(t.glyphs.iter().map(|g| g.text.as_str()).collect::<Vec<_>>(), ["a", "b", "\u{301}", "Z"]);
+    }
+
+    #[test]
+    fn runs_differing_only_in_glyph_boundaries_are_not_redraws() {
+        // "ab" + "c" and "a" + "bc" have the same letters over the same places, but the glyph
+        // boundaries differ, so the second is not a redraw of the first and both stay.
+        let mut v = vec![g("ab", 10.0, 10.0, 16.0), g("c", 16.0, 10.0, 22.0)];
+        v.push(g("Z", 200.0, 10.0, 206.0));
+        v.push(g("a", 10.0, 10.0, 16.0));
+        v.push(g("bc", 16.0, 10.0, 22.0));
+        assert_eq!(layout(v).glyphs.len(), 5);
+    }
+
+    #[test]
+    fn runs_that_only_touch_or_overlap_slightly_still_join() {
+        // "beta" is drawn first, then "Alpha" to its left: 2 pt apart (touching) or 2 pt overlapping
+        // (negative spacing). Both come out as one line in reading order. Where the word space goes
+        // for reversed fragments is not asserted here.
+        let mut v = Vec::new();
+        word(&mut v, "beta", 42.0, 10.0, 6.0);
+        word(&mut v, "Alpha", 10.0, 10.0, 6.0);
+        let t = layout(v);
+        assert_eq!(t.plain_text().replace(' ', ""), "Alphabeta");
+        assert!(t.line_of.iter().all(|line| *line == 0));
+        let mut v = Vec::new();
+        word(&mut v, "beta", 38.0, 10.0, 6.0);
+        word(&mut v, "Alpha", 10.0, 10.0, 6.0);
+        let t = layout(v);
+        assert_eq!(t.plain_text(), "Alphabeta");
     }
 }
