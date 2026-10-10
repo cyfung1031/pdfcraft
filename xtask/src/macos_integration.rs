@@ -217,11 +217,8 @@ fn info_value(doc: &lopdf::Document, key: &str) -> Option<String> {
 }
 
 fn pdf_string(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xfe, 0xff]) {
-        let mut units = Vec::with_capacity(bytes.len().saturating_sub(2) / 2);
-        for pair in bytes[2..].chunks_exact(2) {
-            units.push(u16::from_be_bytes([pair[0], pair[1]]));
-        }
+    if let Some(utf16) = bytes.strip_prefix(&[0xfe, 0xff]) {
+        let units: Vec<u16> = utf16.as_chunks::<2>().0.iter().map(|pair| u16::from_be_bytes(*pair)).collect();
         return String::from_utf16_lossy(&units);
     }
     String::from_utf8_lossy(bytes).into_owned()
