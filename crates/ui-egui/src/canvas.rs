@@ -3849,6 +3849,38 @@ trailer << /Root 1 0 R >>
     }
 
     #[test]
+    fn suspending_a_view_releases_owned_raster_textures_and_queue_state() {
+        let ctx = egui::Context::default();
+        let mut view = view(2, PageLayout::Continuous);
+        let texture = |name| ctx.load_texture(name, egui::ColorImage::filled([1, 1], Color32::WHITE), TextureOptions::LINEAR);
+        let request = RenderRequest { page: 0, scale: 1.0, tag: 1, ..Default::default() };
+        view.pages.insert(0, PageTex { tag: request.tag, tex: texture("suspended-page") });
+        view.thumbs.insert(1, PageTex { tag: THUMB_TAG, tex: texture("suspended-thumbnail") });
+        view.tiles.insert((0, request.tag, 0, 0), texture("suspended-tile"));
+        view.grid_pages.insert(1, (1, texture("suspended-grid-page")));
+        view.print_pages.insert(1, (PRINT_TAG, texture("suspended-print-page")));
+        view.stale_thumbs.insert(1);
+        view.waiting_since.insert(0, 1.0);
+        view.last_queue = vec![request];
+        view.frame_queue = vec![request];
+        view.frame_visible.insert(0);
+        view.need_thumbnail(1, true);
+
+        let pool = RenderPool::new_inline(Arc::new(Vec::new()), Default::default());
+        view.suspend_rendering(&pool);
+
+        assert!(view.pages.is_empty(), "page handles are released");
+        assert!(view.thumbs.is_empty(), "thumbnail handles are released");
+        assert!(view.tiles.is_empty(), "tile handles are released");
+        assert!(view.grid_pages.is_empty(), "organize-grid handles are released");
+        assert!(view.print_pages.is_empty(), "print-preview handles are released");
+        assert!(view.stale_thumbs.is_empty(), "stale thumbnail bookkeeping is cleared");
+        assert!(view.waiting_since.is_empty(), "waiting bookkeeping is cleared");
+        assert!(view.last_queue.is_empty() && !view.render_pending(), "queued demand is retired");
+        assert!(view.frame_queue.is_empty() && view.frame_visible.is_empty() && view.thumb_demand.is_empty());
+    }
+
+    #[test]
     fn virtualized_organizer_keeps_insert_gaps_at_document_positions() {
         use egui_kittest::kittest::Queryable;
 
