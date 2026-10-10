@@ -14,6 +14,7 @@ use hayro::hayro_interpret::{
     BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask, interpret_page,
 };
 use kurbo::{Affine, BezPath, Rect, Shape};
+use std::collections::HashMap;
 
 /// One glyph on the page.
 #[derive(Clone, Debug, PartialEq)]
@@ -549,6 +550,10 @@ struct Run {
 }
 
 impl Run {
+    fn len(self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
     fn range(self) -> std::ops::Range<usize> {
         self.start..self.end
     }
@@ -657,6 +662,31 @@ fn union_find(parent: &mut [usize], mut r: usize) -> usize {
         r = parent[r];
     }
     r
+}
+
+/// A 64-bit fingerprint of a run's glyph texts. Each text is hashed with its length, so ["ab", "c"] and
+/// ["a", "bc"] differ. Equal fingerprints are only candidates: `redraws` decides.
+fn fingerprint(glyphs: &[&TextGlyph], run: Run) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for g in run.range().filter_map(|i| glyphs.get(i)) {
+        for b in (g.text.len() as u64).to_le_bytes().into_iter().chain(g.text.bytes()) {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// Whether run `b` redraws run `a` glyph for glyph: the same text, each glyph within a fifth of its
+/// height of the same glyph in `a`.
+fn redraws(glyphs: &[&TextGlyph], a: Run, b: Run) -> bool {
+    a.len() == b.len()
+        && a.range().zip(b.range()).all(|(i, j)| match (glyphs.get(i), glyphs.get(j)) {
+            (Some(p), Some(g)) => {
+                let tol = 0.2 * (g.rect[3] - g.rect[1]).max(0.1);
+                p.text == g.text && (p.rect[0] - g.rect[0]).abs() < tol && (p.rect[1] - g.rect[1]).abs() < tol
+            }
+            _ => false,
+        })
 }
 
 /// Puts a segment's glyphs in visual reading order into `sc.placed`, and its forced word breaks into `sc.breaks`.
@@ -873,6 +903,45 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
             segs.push(Seg::new(Run { start: i, end: i + 1 }, g, height(i)));
         }
     }
+    // A run that redraws an earlier run at the same place (doubled or shadowed text) is dropped, as a doubled glyph is
+    // above. Runs are keyed by a fingerprint of their glyph texts and a grid cell a fifth of a line high. A key leads to
+    // the latest retained run with it, and `older[k]` links each retained run to the previous one with the same key, so
+    // every earlier candidate is checked. Both exist only for this pass.
+    let retained = {
+        let candidates = segs.iter().filter(|s| s.first.len() >= 2).count();
+        let mut latest: HashMap<(u64, i32, i32), usize> = HashMap::with_capacity(candidates);
+        let mut older = vec![NONE; segs.len()];
+        let mut kept_runs = 0;
+        for i in 0..segs.len() {
+            let run = segs[i].first;
+            if run.len() >= 2 {
+                let tol = 0.2 * segs[i].h;
+                let (cx, cy_) = ((glyphs[run.start].rect[0] / tol).floor() as i32, (glyphs[run.start].rect[1] / tol).floor() as i32);
+                let fp = fingerprint(&glyphs, run);
+                let twin = (-1..=1i32).any(|dx| {
+                    (-1..=1i32).any(|dy| {
+                        let mut link = latest.get(&(fp, cx.saturating_add(dx), cy_.saturating_add(dy))).copied();
+                        while let Some(k) = link {
+                            let Some(prev) = segs.get(k) else { break };
+                            if redraws(&glyphs, prev.first, run) {
+                                return true;
+                            }
+                            link = older.get(k).copied().filter(|&o| o != NONE);
+                        }
+                        false
+                    })
+                });
+                if twin {
+                    continue;
+                }
+                older[kept_runs] = latest.insert((fp, cx, cy_), kept_runs).unwrap_or(NONE);
+            }
+            segs.swap(kept_runs, i);
+            kept_runs += 1;
+        }
+        kept_runs
+    };
+    segs.truncate(retained);
     // Merge same-baseline segments that nearly touch.
     let mut merged = true;
     while merged {
@@ -1428,6 +1497,30 @@ mod tests {
         v.push(g("a", 10.0, 10.0, 16.0));
         v.push(g("bc", 16.0, 10.0, 22.0));
         assert_eq!(layout(v).glyphs.len(), 5);
+    }
+
+    #[test]
+    fn a_run_redrawn_at_the_same_place_is_printed_once() {
+        // "Hello world" drawn again 0.1 pt away (doubled text) prints once. The same words far
+        // below are a separate line, as they are not a redraw.
+        let ops = run_ops(&[("Hello world", "1 0 0 1 100 200"), ("Hello world", "1 0 0 1 100.1 200.1"), ("Hello world", "1 0 0 1 100 100")]);
+        assert_eq!(page_text(&ops), "Hello world\nHello world");
+    }
+
+    #[test]
+    fn a_redraw_is_found_past_an_earlier_run_with_the_same_key() {
+        // Two "Hello" runs share a text and a grid cell but do not redraw each other: the second is
+        // tracked wider. A third run redraws the second and is dropped. A far-off "Z" keeps each run
+        // a segment of its own.
+        let mut v = Vec::new();
+        word(&mut v, "Hello", 10.0, 10.0, 6.0);
+        v.push(g("Z", 200.0, 10.0, 206.0));
+        word(&mut v, "Hello", 10.5, 10.0, 9.0);
+        v.push(g("Z", 300.0, 10.0, 306.0));
+        word(&mut v, "Hello", 10.6, 10.0, 9.0);
+        let t = layout(v);
+        assert_eq!(t.glyphs.iter().filter(|g| g.text == "H").count(), 2, "{:?}", t.plain_text());
+        assert_eq!(t.glyphs.len(), 12);
     }
 
     #[test]
