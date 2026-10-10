@@ -323,8 +323,11 @@ pub(crate) fn extract_page(pdf: &Pdf, page: usize, settings: &InterpreterSetting
     // direction turns. Each such run is one line.
     let turned = |u: [f64; 2]| u[0].abs().min(u[1].abs()) > DIRECTION_TOLERANCE;
     let mut in_curve = vec![false; glyphs.len()];
-    // Turned text: straight flows along one writing direction (`Some`), and curved runs.
-    let mut extra: Vec<(Option<[f64; 2]>, Vec<usize>)> = Vec::new();
+    // Turned text: curved runs, and straight flows along one writing direction. The two are kept
+    // apart so finding a glyph's direction scans only the directions (a few dozen at most: each
+    // differs from the others by more than the tolerance), not every curved run.
+    let mut curves: Vec<Vec<usize>> = Vec::new();
+    let mut straight: Vec<([f64; 2], Vec<usize>)> = Vec::new();
     let mut start = 0;
     for end in 1..=glyphs.len() {
         if end < glyphs.len() && continues(&glyphs[end - 1], &glyphs[end]) {
@@ -333,7 +336,7 @@ pub(crate) fn extract_page(pdf: &Pdf, page: usize, settings: &InterpreterSetting
         let run = &glyphs[start..end];
         if run.iter().any(|g| turned(g.1)) && run.iter().any(|g| !compatible(run[0].1, g.1)) {
             in_curve[start..end].fill(true);
-            extra.push((None, (start..end).collect()));
+            curves.push((start..end).collect());
         }
         start = end;
     }
@@ -346,10 +349,10 @@ pub(crate) fn extract_page(pdf: &Pdf, page: usize, settings: &InterpreterSetting
             if let Some(q) = quarters.get_mut(*quarter) {
                 q.push(i);
             }
-        } else if let Some((_, ids)) = extra.iter_mut().find(|(d, _)| d.is_some_and(|d| compatible(d, *u))) {
+        } else if let Some((_, ids)) = straight.iter_mut().find(|(d, _)| compatible(*d, *u)) {
             ids.push(i);
         } else {
-            extra.push((Some(*u), vec![i]));
+            straight.push((*u, vec![i]));
         }
     }
     // A horizontal heading must not force a vertical body back into horizontal line grouping.
@@ -368,8 +371,10 @@ pub(crate) fn extract_page(pdf: &Pdf, page: usize, settings: &InterpreterSetting
         flows
     };
     let flows = upright(quarters);
-    let mut extra: Vec<Flow> = extra
+    let mut extra: Vec<Flow> = curves
         .into_iter()
+        .map(|ids| (None, ids))
+        .chain(straight.into_iter().map(|(u, ids)| (Some(u), ids)))
         .map(|(u, ids)| {
             let rects = match u {
                 // Turned text is laid out along its own baseline.
