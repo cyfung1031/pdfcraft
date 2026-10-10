@@ -3657,6 +3657,54 @@ trailer << /Root 1 0 R >>
         }
     }
 
+    // A tile seam must not change the raster when large-page work is stitched back together.
+    #[test]
+    fn stitched_render_partitions_match_a_whole_render() {
+        let content =
+            "0 0 1 rg 0 0 200 200 re f\n1 0 0 RG 2 w 0 100 m 200 100 l S\nBT /F1 18 Tf 20 150 Td (tile text) Tj ET\nq 40 0 0 40 100 100 cm /Im Do Q";
+        let pdf = format!(
+            "%PDF-1.4\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Im 6 0 R >> >> >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+             5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n\
+             6 0 obj << /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 25 >> stream\nFF000000FF00000000FFFFFFFF>\nendstream endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+            content.len()
+        );
+        let mut renderer = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+        let request = RenderRequest { scale: 6.0, ..Default::default() };
+        let whole = renderer.render(request);
+        assert!(whole.error.is_none(), "{:?}", whole.error);
+        assert_eq!((whole.width, whole.height), (1200, 1200));
+
+        let mut assert_partition = |tile_width: u32, tile_height: u32| {
+            let mut stitched = vec![0; whole.rgba.len()];
+            for y in (0..whole.height).step_by(tile_height as usize) {
+                for x in (0..whole.width).step_by(tile_width as usize) {
+                    let tile = Tile { x, y, w: tile_width.min(whole.width - x), h: tile_height.min(whole.height - y) };
+                    let part = renderer.render(RenderRequest { tile: Some(tile), ..request });
+                    assert!(part.error.is_none(), "tile {tile:?}: {:?}", part.error);
+                    assert_eq!((part.width, part.height), (tile.w, tile.h));
+                    for row in 0..tile.h {
+                        let src = (row * tile.w * 4) as usize;
+                        let dst = ((y + row) * whole.width * 4 + x * 4) as usize;
+                        let len = (tile.w * 4) as usize;
+                        stitched[dst..dst + len].copy_from_slice(&part.rgba[src..src + len]);
+                    }
+                }
+            }
+            assert_eq!(stitched.as_slice(), whole.rgba.as_ref(), "partition {tile_width}×{tile_height}");
+        };
+
+        for bands in [2, 4, 8] {
+            assert_partition(whole.width, whole.height.div_ceil(bands));
+        }
+        assert_partition(1024, 1024);
+        assert_partition(127, 131);
+    }
+
     /// hayro skips drawing a path that can't paint the canvas (vendored patch (9)), so a tile no
     /// longer strokes every path of its page. Every tile, and the whole page, is byte for byte
     /// what it was without skipping, where paint reaches past a path into the next tile: round
