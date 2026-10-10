@@ -847,6 +847,8 @@ fn collide(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, h: f32, sc: &mu
     for unit in &sc.units {
         sc.placed.extend_from_slice(&sc.flat[unit.glyphs.clone()]);
     }
+    // Sorted, so that each glyph's membership is a binary search rather than a scan of the breaks.
+    sc.breaks.sort_unstable();
     dense
 }
 
@@ -1077,7 +1079,7 @@ fn arrange(glyphs: &[TextGlyph]) -> (Vec<usize>, Vec<u32>, Vec<bool>) {
                 let (pt, ct) = (&glyphs[p].text, &glyphs[c].text);
                 let cjk = pt.chars().any(is_cjk) && ct.chars().any(is_cjk) && gap < h * 0.5;
                 let tight_cluster = (pt.chars().any(is_complex) || ct.chars().any(is_complex)) && gap < h * 0.6;
-                let run_start = sc.breaks.contains(&c);
+                let run_start = sc.breaks.binary_search(&c).is_ok();
                 if (gap > threshold || run_start) && !cjk && !tight_cluster && !pt.trim().is_empty() && !ct.trim().is_empty() {
                     // Mark the space before glyph `c` wherever it ended up after RTL reversal. The first glyph of a
                     // segment never takes a space.
@@ -1587,6 +1589,24 @@ mod tests {
         for run in &runs {
             assert!(!t.find(run).is_empty(), "{run:?} whole in {:?}", t.plain_text());
         }
+    }
+
+    #[test]
+    fn overlapping_rows_each_start_a_word() {
+        // 60 rows of three glyphs, each row starting 2 pt right of the one before and overprinting it, so every row
+        // is a forced word break. The rows are separated by far-off glyphs, which makes each one a run of its own.
+        // Every glyph has a text of its own, so no glyph is taken for a fake-bold copy.
+        let mut v = Vec::new();
+        let mut rows = Vec::new();
+        for k in 0..60 {
+            let text: String = (0..3).map(|i| char::from_u32(0x0400 + (3 * k + i) as u32).unwrap()).collect();
+            word(&mut v, &text, 10.0 + 2.0 * k as f32, 10.0, 6.0);
+            v.push(g(&char::from_u32(0x0500 + k as u32).unwrap().to_string(), 500.0, 10.0, 506.0));
+            rows.push(text);
+        }
+        let t = layout(v);
+        let expected: String = rows.join(" ");
+        assert!(t.plain_text().starts_with(&expected), "{:?}", t.plain_text());
     }
 
     #[test]
