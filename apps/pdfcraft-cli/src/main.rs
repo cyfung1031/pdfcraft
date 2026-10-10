@@ -483,6 +483,13 @@ fn render(args: &[String]) -> Result<(), CliError> {
     };
     std::fs::write(out, bytes).map_err(|e| format!("{out}: {e}"))?;
     let _ = writeln!(std::io::stderr().lock(), "rendered page {page} at {dpi} dpi: {}×{} px in {} ms", p.width, p.height, p.millis);
+    for warning in &p.warnings {
+        match warning {
+            pdfcraft_render::RenderWarning::ContentTruncated => {
+                let _ = writeln!(std::io::stderr().lock(), "warning: page {page}: content past the page's safety budget was skipped");
+            }
+        }
+    }
     Ok(())
 }
 
