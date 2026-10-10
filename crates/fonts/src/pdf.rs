@@ -763,12 +763,12 @@ fn cover_index(ranges: &[BfRange]) -> Vec<(u64, Option<usize>)> {
 }
 
 /// One bit for each code below 65 536 in `codes`; empty when there is none.
+/// Sized to the highest such code, so a font with a few low codes costs a few words, not 8 KB.
 fn bit_set_below_64k(codes: impl Iterator<Item = u32>) -> Vec<u64> {
-    let mut bits = Vec::new();
-    for code in codes.filter(|&code| code < 0x1_0000) {
-        if bits.is_empty() {
-            bits = vec![0u64; 0x1_0000 / 64];
-        }
+    let low: Vec<u32> = codes.filter(|&code| code < 0x1_0000).collect();
+    let Some(&max) = low.iter().max() else { return Vec::new() };
+    let mut bits = vec![0u64; max as usize / 64 + 1];
+    for code in low {
         if let Some(word) = bits.get_mut(code as usize / 64) {
             *word |= 1u64 << (code % 64);
         }
@@ -779,17 +779,24 @@ fn bit_set_below_64k(codes: impl Iterator<Item = u32>) -> Vec<u64> {
 /// The latest-declared range covering each code below 65 536, read off the stretches of `cover`; empty
 /// when no range covers such a code. The stretches are disjoint, so this takes at most 65 536 steps
 /// however many ranges there are.
+///
+/// The table ends with the last covered code: a code past it has no covering range, and a font whose
+/// ranges cover a few low codes costs that many entries, not a fixed 256 KB.
 fn owners_below_64k(cover: &[(u64, Option<usize>)]) -> Vec<u32> {
-    let mut owner = Vec::new();
+    let stretch_end = |i: usize| cover.get(i + 1).map_or(0x1_0000, |&(next, _)| next.min(0x1_0000));
+    let len = cover
+        .iter()
+        .enumerate()
+        .filter(|&(_, &(start, winner))| winner.is_some() && start < 0x1_0000)
+        .map(|(i, _)| stretch_end(i))
+        .max()
+        .unwrap_or(0);
+    let mut owner = vec![u32::MAX; usize::try_from(len).unwrap_or(0)];
     for (i, &(start, winner)) in cover.iter().enumerate() {
         let Some(record) = winner else { continue };
-        if owner.is_empty() {
-            owner = vec![u32::MAX; 0x1_0000];
-        }
         // Record indices are below MAX_CMAP_ENTRIES, which fits in a u32.
         let record = record as u32;
-        let end = cover.get(i + 1).map_or(0x1_0000, |&(next, _)| next.min(0x1_0000));
-        for code in start..end {
+        for code in start..stretch_end(i) {
             if let Some(slot) = owner.get_mut(code as usize) {
                 *slot = record;
             }
@@ -932,6 +939,21 @@ mod tests {
     use pdfcraft_cos::{Dict, Document, Object, Stream};
 
     use super::*;
+
+    /// A font whose ranges cover a few low codes keeps tables that size, not a fixed 64k-entry one.
+    #[test]
+    fn low_code_tables_end_with_the_last_covered_code() {
+        // One range over codes 0x20..=0x21, then nothing.
+        let cover = [(0x20u64, Some(0usize)), (0x22, None)];
+        let owner = super::owners_below_64k(&cover);
+        assert_eq!(owner.len(), 0x22);
+        assert_eq!((owner[0x1F], owner[0x20], owner[0x21]), (u32::MAX, 0, 0));
+        assert!(super::owners_below_64k(&[(0x2_0000, Some(0))]).is_empty(), "no code below 65 536");
+        let bits = super::bit_set_below_64k([3u32, 130, 0x2_0000].into_iter());
+        assert_eq!(bits.len(), 3);
+        assert_eq!((bits[0], bits[2]), (1 << 3, 1 << 2));
+        assert!(super::bit_set_below_64k([0x1_0000u32].into_iter()).is_empty());
+    }
 
     fn font(doc: &mut Document, entries: Vec<(&str, Object)>) -> Dict {
         let mut d = Dict::new();
