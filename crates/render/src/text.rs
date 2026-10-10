@@ -634,6 +634,8 @@ struct Scratch {
     /// The gaps between the current segment's glyphs, and its glyphs in logical order when it has right-to-left text.
     gaps: Vec<f32>,
     logical: Vec<usize>,
+    /// `placed` with the marks merged in, built before it is swapped in.
+    merged: Vec<usize>,
 }
 
 /// One run of a colliding component.
@@ -716,10 +718,21 @@ fn place_glyphs(glyphs: &[&TextGlyph], height: &dyn Fn(usize) -> f32, s: &Seg, s
     } else {
         collide(glyphs, height, s.h, sc);
     }
+    // Each mark goes before the first placed glyph whose x is greater than its own. Marks are visited in x order, and
+    // that position never moves back, so one pass over `placed` puts all of them in.
     sc.marks.sort_by(|a, b| x0(*a).total_cmp(&x0(*b)));
-    for &m in &sc.marks {
-        let at = sc.placed.iter().position(|&j| x0(j) > x0(m)).unwrap_or(sc.placed.len());
-        sc.placed.insert(at, m);
+    if !sc.marks.is_empty() {
+        sc.merged.clear();
+        let mut next = 0;
+        for &m in &sc.marks {
+            while next < sc.placed.len() && x0(sc.placed[next]) <= x0(m) {
+                sc.merged.push(sc.placed[next]);
+                next += 1;
+            }
+            sc.merged.push(m);
+        }
+        sc.merged.extend_from_slice(&sc.placed[next..]);
+        std::mem::swap(&mut sc.placed, &mut sc.merged);
     }
 }
 
@@ -1497,6 +1510,26 @@ mod tests {
         v.push(g("a", 10.0, 10.0, 16.0));
         v.push(g("bc", 16.0, 10.0, 22.0));
         assert_eq!(layout(v).glyphs.len(), 5);
+    }
+
+    #[test]
+    fn many_combining_marks_stay_with_their_letters() {
+        // 400 letters on one line, then a zero-width mark at the start of each one, drawn after the whole line:
+        // the marks form one run of their own, and each goes back next to its letter, in order.
+        let letters: Vec<String> = (0..400).map(|i| char::from(b'a' + (i % 26) as u8).to_string()).collect();
+        let mut v = Vec::new();
+        for (i, c) in letters.iter().enumerate() {
+            let x = 10.0 + i as f32 * 6.0;
+            v.push(g(c, x, 10.0, x + 6.0));
+        }
+        for i in 0..letters.len() {
+            let x = 10.0 + i as f32 * 6.0;
+            v.push(g("\u{301}", x, 10.0, x));
+        }
+        let t = layout(v);
+        let expected: Vec<&str> = letters.iter().flat_map(|c| [c.as_str(), "\u{301}"]).collect();
+        assert_eq!(t.glyphs.iter().map(|g| g.text.as_str()).collect::<Vec<_>>(), expected);
+        assert!(t.line_of.iter().all(|line| *line == 0));
     }
 
     #[test]
