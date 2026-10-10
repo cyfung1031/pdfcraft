@@ -2449,3 +2449,24 @@ fn adopting_page_only_fields_is_noted_as_a_repair() {
     assert_eq!(names, ["alpha", "beta"]);
     assert!(doc.repair_log().iter().any(|l| l.contains("2 fields") && l.contains("page annotations")), "{:?}", doc.repair_log());
 }
+
+/// A page too large for the renderer at the asked resolution exports at the most it allows (and
+/// says at what), as File ▸ Export does; a source that asks for strictness refuses it instead.
+#[test]
+fn oversized_exports_clamp_and_report_their_dpi_unless_strict() {
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    // 14,400 pt (200 in) wide: 600 dpi would be 120,000 px.
+    let bytes = s.create_blank(14_400.0, 792.0, 1).unwrap();
+    let id = s.open("wide.pdf", None, bytes, None).unwrap();
+    let src = s.get(id).unwrap().export_source();
+    let mut ex = export::Exporter::from_source(src.clone());
+    let used = ex.dpi_used(0, 600.0);
+    assert!(used < 600.0 && used > 0.0, "{used}");
+    let png = ex.png(0, 600.0).expect("clamped, not refused");
+    assert!(png.starts_with(b"\x89PNG"));
+    assert!((ex.dpi_used(0, 18.0) - 18.0).abs() < 0.01, "a small enough request (3,600 px) is drawn as asked");
+    let mut strict = src;
+    strict.config.reject_oversize = true;
+    let err = export::Exporter::from_source(strict).png(0, 600.0).unwrap_err();
+    assert!(err.contains("exceeds renderer limits"), "{err}");
+}
