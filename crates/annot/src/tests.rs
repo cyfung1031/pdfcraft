@@ -375,6 +375,20 @@ fn editing_a_callout_refits_the_box_and_keeps_the_leader() {
 }
 
 #[test]
+fn real_annotation_flags_do_not_lock_comments() {
+    let mut doc = fixture();
+    let page = page_refs(&doc).unwrap()[0];
+    let mut entries = annots(&doc, page);
+    let Object::Dict(annotation) = &mut entries[0] else { panic!("fixture annotation is inline") };
+    annotation.set(b"F".to_vec(), Object::Real(128.5));
+    set_annots(&mut doc, page, entries).unwrap();
+
+    assert!(!summaries(&doc)[0].locked, "a non-integer /F is outside the annotation flag domain");
+    assert!(!props(&doc, 0, 0).unwrap().locked);
+    assert!(set_info(&mut doc, 0, 0, Some("Ada"), None, None, &meta("")).is_ok());
+}
+
+#[test]
 fn a_locked_text_box_still_refits_its_text() {
     let mut doc = fixture();
     let t = add_annotation(&mut doc, &new(0, Shape::TextBox { rect: [100.0, 680.0, 304.0, 692.0], font_size: 12.0 }), &meta("t")).unwrap();
