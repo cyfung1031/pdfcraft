@@ -29,6 +29,9 @@ use pdfcraft_ui_egui::PdfCraftApp;
 mod apple_events;
 mod logging;
 mod updates;
+#[cfg(test)]
+#[path = "windows_manifest.rs"]
+mod windows_manifest;
 
 /// Freedesktop app id: the `.desktop` file name and the hicolor icon name.
 const APP_ID: &str = "ai.storyteller.pdfcraft";
