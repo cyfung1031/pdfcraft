@@ -1969,6 +1969,45 @@ trailer << /Root 1 0 R >>
         assert_eq!(px(80, 5), &[255, 255, 255, 255]);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn page_pixels_are_invariant_to_render_worker_count() {
+        let blue = "0 0 1 rg 10 10 30 20 re f";
+        let red = "1 0 0 rg 20 5 40 35 re f";
+        let pdf = format!(
+            "%PDF-1.4\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 100 50] >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{blue}\nendstream endobj\n\
+             5 0 obj << /Type /Page /Parent 2 0 R /Contents 6 0 R >> endobj\n\
+             6 0 obj << /Length {} >> stream\n{red}\nendstream endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+            blue.len(),
+            red.len()
+        )
+        .into_bytes();
+        let bytes = Arc::new(pdf);
+        let mut reference = PageRenderer::new(bytes.clone(), RenderConfig::default());
+        let expected: Vec<_> = (0..2).map(|page| reference.render(RenderRequest { page, scale: 1.0, ..Default::default() })).collect();
+        assert!(expected.iter().all(|page| page.error.is_none()));
+
+        for workers in [1, 2, 4] {
+            let pool = RenderPool::new(bytes.clone(), workers, RenderConfig::default());
+            pool.set_queue((0..2).map(|page| RenderRequest { page, scale: 1.0, ..Default::default() }).collect());
+            let mut actual = [receive_before_deadline(&pool), receive_before_deadline(&pool)];
+            actual.sort_by_key(|page| page.request.page);
+            for (page, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                assert!(actual.error.is_none(), "{workers} workers, page {page}: {:?}", actual.error);
+                assert_eq!(
+                    (actual.width, actual.height, &actual.rgba),
+                    (expected.width, expected.height, &expected.rgba),
+                    "{workers} workers, page {page}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn pixels_are_a_plain_renders_bytes_in_a_buffer_a_gui_can_take_over() {
         let mut r = PageRenderer::new(Arc::new(ONE_PAGE.to_vec()), RenderConfig::default());
