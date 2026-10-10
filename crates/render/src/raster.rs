@@ -3641,6 +3641,76 @@ trailer << /Root 1 0 R >>
         assert!(px.rgba[((50 * px.width + 25) * 4) as usize] < 64, "the glyph is drawn");
     }
 
+    /// A page's `/UserUnit` (the size of its unit in points) scales the page and everything on
+    /// it, after the crop box and before `/Rotate`, as Acrobat shows such pages: with
+    /// `/UserUnit 2`, scale 1 renders pixel for pixel what scale 2 renders without it. As in
+    /// Acrobat, values below 1, values that aren't numbers and a value on a parent `/Pages`
+    /// node count as 1, and values over 75,000 count as 75,000.
+    #[test]
+    fn user_unit_scales_the_page_and_everything_on_it() {
+        let content = "1 0 0 rg 20 10 30 20 re f BT /F1 18 Tf 15 50 Td (Hg) Tj ET q 16 0 0 8 60 30 cm BI /W 2 /H 2 /CS /RGB /BPC 8 /F /AHx ID 0000FFFF000000FF00FFFF00> EI Q";
+        let pdf = |page: &str, parent: &str| {
+            format!(
+                "%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 {parent} >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 80] /CropBox [10 6 90 76] {page} /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+6 0 obj 2 endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+                content.len()
+            )
+            .into_bytes()
+        };
+        let render = |bytes: Vec<u8>, scale: f32| {
+            let mut r = PageRenderer::new(Arc::new(bytes), RenderConfig::default());
+            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale, tag: 0 });
+            assert!(p.error.is_none(), "{:?}", p.error);
+            p
+        };
+        let glyphs = |bytes: Vec<u8>| {
+            let parsed = Pdf::new(Arc::new(bytes)).expect("parses");
+            crate::text::extract_page(&parsed, 0, &InterpreterSettings::default()).expect("text").glyphs
+        };
+        let size = |bytes: Vec<u8>| {
+            let p = &crate::inspect(Arc::new(bytes), None).expect("opens").pages[0];
+            (p.width, p.height)
+        };
+        for rotate in [0, 90, 180, 270] {
+            let turned = format!("/Rotate {rotate}");
+            let (w, h) = if rotate % 180 == 0 { (80.0, 70.0) } else { (70.0, 80.0) };
+            let plain = render(pdf(&turned, ""), 2.0);
+            let one = render(pdf(&turned, ""), 1.0);
+            let plain_glyphs = glyphs(pdf(&turned, ""));
+            for unit in ["/UserUnit 2", "/UserUnit 6 0 R"] {
+                let page = format!("{turned} {unit}");
+                assert_eq!(size(pdf(&page, "")), (w * 2.0, h * 2.0), "{page}");
+                let doubled = render(pdf(&page, ""), 1.0);
+                assert_eq!((doubled.width, doubled.height), (plain.width, plain.height), "{page}");
+                assert!(doubled.rgba == plain.rgba, "{page}: the page renders as at twice the scale");
+                let doubled_glyphs = glyphs(pdf(&page, ""));
+                assert_eq!(doubled_glyphs.len(), plain_glyphs.len(), "{page}");
+                for (d, p) in doubled_glyphs.iter().zip(&plain_glyphs) {
+                    assert_eq!(d.rect, p.rect.map(|v| v * 2.0), "{page}: text layer");
+                }
+            }
+            for unit in ["/UserUnit 1", "/UserUnit 0", "/UserUnit -1", "/UserUnit 0.5", "/UserUnit /Two", "/UserUnit (2)"] {
+                let page = format!("{turned} {unit}");
+                assert_eq!(size(pdf(&page, "")), (w, h), "{page}");
+                assert!(render(pdf(&page, ""), 1.0).rgba == one.rgba, "{page} counts as 1");
+            }
+            assert_eq!(size(pdf(&turned, "/UserUnit 2")), (w, h), "not inherited from /Pages");
+            assert!(render(pdf(&turned, "/UserUnit 2"), 1.0).rgba == one.rgba, "not inherited from /Pages");
+            for unit in ["/UserUnit 75000", "/UserUnit 100000"] {
+                assert_eq!(size(pdf(&format!("{turned} {unit}"), "")), (w * 75_000.0, h * 75_000.0), "{unit}");
+            }
+        }
+    }
+
     #[test]
     fn tiles_match_full_render() {
         let mut r = PageRenderer::new(Arc::new(ONE_PAGE.to_vec()), RenderConfig::default());

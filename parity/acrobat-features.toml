@@ -698,8 +698,8 @@ milestone = "M2"
 status = "partial"
 commands = []
 tools = ["page_render"]
-evidence = ["crates/render/src/raster.rs::renders_a_blue_rectangle", "crates/automation/tests/automation.rs::open_inspect_render_and_find"]
-notes = "hayro bootstrap renderer; own DisplayList devices in M2.6"
+evidence = ["crates/render/src/raster.rs::renders_a_blue_rectangle", "crates/automation/tests/automation.rs::open_inspect_render_and_find", "crates/render/src/raster.rs::user_unit_scales_the_page_and_everything_on_it"]
+notes = "hayro bootstrap renderer; own DisplayList devices in M2.6. Pages with /UserUnit are shown at their size in points, as Acrobat reads the value"
 
 [[feature]]
 id = "view.render-shadings-patterns"
