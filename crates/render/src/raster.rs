@@ -3657,6 +3657,59 @@ trailer << /Root 1 0 R >>
         }
     }
 
+    /// hayro skips drawing a path that can't paint the canvas (vendored patch (9)), so a tile no
+    /// longer strokes every path of its page. Every tile, and the whole page, is byte for byte
+    /// what it was without skipping, where paint reaches past a path into the next tile: round
+    /// and square caps, a sharp miter, a rotated and a stretched matrix, a hairline, dashes, a
+    /// curve, text, and a page shown rotated.
+    #[test]
+    fn skipping_paths_off_the_canvas_changes_no_pixel() {
+        // Tiles of 80 device pixels at scale 2 meet every 40 pt; each mark crosses such a line
+        // only with its stroke width, caps, miter or antialiasing. The last one is off the page.
+        let content = "1 0 0 RG 20 w 1 J 10 30 m 35 30 l S
+2 J 10 60 m 35 70 l S
+0 J 0 j 10 M 8 w 100 50 m 118 60 l 100 70 S
+q 0.7071 0.7071 -0.7071 0.7071 160 20 cm 15 w 1 J 0 0 m 20 0 l S Q
+0 w 0 0 0 RG 79.9 100 m 79.9 140 l S
+1 0 0 rg 80.3 150 20 20 re f
+0 0 1 RG 6 w [8 4] 0 d 1 J 130 100 m 205 160 l S [] 0 d
+0 1 0 RG 3 w 10 200 m 10 290 70 290 70 200 c S
+BT /F1 30 Tf 70 205 Td (Hg) Tj ET
+q 4 0 0 0.25 0 0 cm 12 w 1 J 2 500 m 8 500 l S Q
+300 300 m 320 320 l S";
+        for rotate in [0, 90] {
+            let pdf = format!(
+                "%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 240 240] /Rotate {rotate} /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+                content.len()
+            );
+            let mut r = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+            let mut both = |tile| {
+                let req = RenderRequest { scale: 2.0, tile, ..Default::default() };
+                let skipped = r.render(req);
+                hayro::set_skip_offscreen_paths(false);
+                let drawn = r.render(req);
+                hayro::set_skip_offscreen_paths(true);
+                assert!(skipped.error.is_none() && drawn.error.is_none(), "{:?}", skipped.error);
+                assert!(skipped.rgba == drawn.rgba, "/Rotate {rotate}: {tile:?} changed");
+            };
+            both(None);
+            for y in (0..480).step_by(80) {
+                for x in (0..480).step_by(80) {
+                    both(Some(Tile { x, y, w: 80, h: 80 }));
+                }
+            }
+        }
+    }
+
     /// A Japanese CID font that isn't embedded (Adobe-Japan1, as `HeiseiMin-W3` with
     /// `UniJIS-UCS2-H` in #260's test file) drew nothing: hayro's substitutes for fonts that
     /// aren't embedded are Latin-only. With craft-fonts (the build input release builds embed),
