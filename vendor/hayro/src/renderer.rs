@@ -114,17 +114,23 @@ fn resampling_scratch_byte_len(
 
 /// PdfCraft patch: validate output, crossed intermediate and filter-work bounds before planning.
 /// Source width × target height also bounds PicScale's smaller single-threaded four-row scratch.
+/// Nearest-neighbour (`!interpolate`) has none of those: it copies source pixels into the target,
+/// so only the source and target buffers are bounded.
 fn resampling_byte_len(
     source: (u32, u32),
     target: (u32, u32),
     channels: usize,
     data_len: usize,
     max_pixels: u64,
+    interpolate: bool,
 ) -> Option<usize> {
     if source_byte_len(source.0, source.1, channels, max_pixels)? != data_len {
         return None;
     }
     let target_len = image_byte_len(target.0, target.1, channels, max_pixels)?;
+    if !interpolate {
+        return Some(target_len);
+    }
     resampling_scratch_byte_len(source, target, channels, max_pixels)?;
     source_byte_len(source.0, target.1, channels, max_pixels)?;
     if source.0 > MAX_RESAMPLING_SOURCE_SIDE || source.1 > MAX_RESAMPLING_SOURCE_SIDE {
@@ -141,6 +147,7 @@ fn resampling_byte_len(
 /// PdfCraft patch: image dimensions selected before allocating resampling buffers.
 /// Exported for PdfCraft's small, metadata-only regression tests. `None` rejects invalid
 /// sources/scales or an over-budget target/intermediate; the caller may retain a valid source.
+/// `interpolate` selects the Catmull-Rom limits; nearest-neighbour (`false`) skips them.
 #[doc(hidden)]
 pub fn image_resampling_size(
     width: u32,
@@ -150,6 +157,7 @@ pub fn image_resampling_size(
     x_scale: f32,
     y_scale: f32,
     max_pixels: u64,
+    interpolate: bool,
 ) -> Option<(u32, u32)> {
     if !x_scale.is_finite() || !y_scale.is_finite() || x_scale <= 0.0 || y_scale <= 0.0 {
         return None;
@@ -165,7 +173,14 @@ pub fn image_resampling_size(
     } else {
         (width, height)
     };
-    resampling_byte_len((width, height), target, channels, data_len, max_pixels)?;
+    resampling_byte_len(
+        (width, height),
+        target,
+        channels,
+        data_len,
+        max_pixels,
+        interpolate,
+    )?;
     Some(target)
 }
 
@@ -494,6 +509,7 @@ impl Renderer {
         let resized = match pixel_format {
             ImagePixelFormat::Luma => self.resize_image_data_impl::<1>(
                 scaler,
+                interpolate,
                 data,
                 src_width,
                 src_height,
@@ -505,6 +521,7 @@ impl Renderer {
             ),
             ImagePixelFormat::Rgb => self.resize_image_data_impl::<3>(
                 scaler,
+                interpolate,
                 data,
                 src_width,
                 src_height,
@@ -516,6 +533,7 @@ impl Renderer {
             ),
             ImagePixelFormat::Rgba => self.resize_image_data_impl::<4>(
                 scaler,
+                interpolate,
                 data,
                 src_width,
                 src_height,
@@ -540,6 +558,7 @@ impl Renderer {
     fn resize_image_data_impl<const N: usize>(
         &self,
         scaler: &Scaler,
+        interpolate: bool,
         data: Vec<u8>,
         src_width: u32,
         src_height: u32,
@@ -560,6 +579,7 @@ impl Renderer {
                 N,
                 data.len(),
                 MAX_IMAGE_PIXELS,
+                interpolate,
             )?;
             let source_size = ImageSize::new(src_width as usize, src_height as usize);
             let target_size = ImageSize::new(new_width as usize, new_height as usize);
@@ -567,12 +587,17 @@ impl Renderer {
                 .ok()?;
             let plan = plan(scaler, source_size, target_size).ok()?;
             let scratch_len = plan.scratch_size();
-            let scratch_bound = resampling_scratch_byte_len(
-                (src_width, src_height),
-                (new_width, new_height),
-                N,
-                MAX_IMAGE_PIXELS,
-            )?;
+            // Nearest-neighbour needs no scratch, so any scratch it reports is refused.
+            let scratch_bound = if interpolate {
+                resampling_scratch_byte_len(
+                    (src_width, src_height),
+                    (new_width, new_height),
+                    N,
+                    MAX_IMAGE_PIXELS,
+                )?
+            } else {
+                0
+            };
             if scratch_len > scratch_bound {
                 return None;
             }
@@ -654,6 +679,7 @@ impl Renderer {
             x_scale,
             y_scale,
             MAX_IMAGE_PIXELS,
+            interpolate,
         ) {
             Some(target) => target,
             None => {
