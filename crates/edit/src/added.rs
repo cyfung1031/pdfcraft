@@ -837,7 +837,11 @@ pub fn list_added(doc: &Document) -> Vec<Added> {
                 // Display points depend on the page's /UserUnit. An item records the one it was
                 // written for; none means 1, as for items written before display space followed
                 // /UserUnit.
-                let written = params.get(b"UserUnit").and_then(Object::as_f64).filter(|u| *u >= 1.0).unwrap_or(1.0);
+                let written = params
+                    .get(b"UserUnit")
+                    .and_then(Object::as_f64)
+                    .filter(|u| u.is_finite() && *u >= 1.0)
+                    .map_or(1.0, |u| u.min(pdfcraft_model::MAX_USER_UNIT));
                 out.push(Added { page: pi, obj: r, content: c.scaled(p.user_unit(doc) / written) });
             }
         }
