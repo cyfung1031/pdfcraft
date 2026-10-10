@@ -158,6 +158,23 @@ fn row_and_column_spans_keep_a_table_regular() {
 }
 
 #[test]
+fn elements_past_the_limit_are_not_read() {
+    // 1 catalog, 2 structure root, 3 Document: ten paragraphs, then a figure without alternate text.
+    let mut kids = vec!["<< /S /P >>".to_string(); 10];
+    kids.push("<< /S /Figure >>".into());
+    let objs = [
+        "<< /Type /Catalog /StructTreeRoot 2 0 R >>".to_string(),
+        "<< /Type /StructTreeRoot /K 3 0 R >>".into(),
+        format!("<< /S /Document /K [{}] >>", kids.join(" ")),
+    ];
+    let doc = pdf(&objs, "");
+    let cut = structure::Tree::read_with_limit(&doc, &[], 5);
+    assert!(cut.rule(Rule::FiguresAltText).is_empty(), "the figure is past the limit");
+    let whole = structure::Tree::read_with_limit(&doc, &[], 100);
+    assert_eq!(whole.rule(Rule::FiguresAltText).len(), 1);
+}
+
+#[test]
 fn page_content_and_annotation_problems_are_found() {
     let mut objs = good();
     // Untagged text, no tab order, an untagged link and a field without a tooltip.

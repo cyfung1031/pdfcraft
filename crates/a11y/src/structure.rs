@@ -103,6 +103,11 @@ pub(crate) struct Tree {
 
 impl Tree {
     pub fn read(doc: &Document, pages: &[Page]) -> Tree {
+        Tree::read_with_limit(doc, pages, MAX_ELEMENTS)
+    }
+
+    /// The tree, reading at most `limit` elements (tests lower it to reach the cut-off quickly).
+    pub fn read_with_limit(doc: &Document, pages: &[Page], limit: usize) -> Tree {
         let mut t = Tree::default();
         let Some(cat) = doc.root().and_then(|r| doc.get(r).as_dict().cloned()) else { return t };
         let Some(root) = cat.get(b"StructTreeRoot").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()) else { return t };
@@ -110,7 +115,7 @@ impl Tree {
         let role_map = root.get(b"RoleMap").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).unwrap_or_default();
         let page_index: HashMap<ObjRef, usize> = pages.iter().enumerate().map(|(i, p)| (p.obj, i)).collect();
         let mut seen = HashSet::new();
-        let mut reader = Reader { doc, role_map: &role_map, page_index: &page_index, seen: &mut seen };
+        let mut reader = Reader { doc, role_map: &role_map, page_index: &page_index, seen: &mut seen, limit };
         if let Some(k) = root.get(b"K") {
             let mut roots = Vec::new();
             reader.kids(&mut t, k, None, None, &mut roots, 0);
@@ -349,6 +354,7 @@ struct Reader<'a> {
     role_map: &'a Dict,
     page_index: &'a HashMap<ObjRef, usize>,
     seen: &'a mut HashSet<ObjRef>,
+    limit: usize,
 }
 
 impl Reader<'_> {
@@ -372,7 +378,7 @@ impl Reader<'_> {
 
     /// Read the kids `k` of `parent` (or of the root), appending element indexes to `out`.
     fn kids(&mut self, t: &mut Tree, k: &Object, parent: Option<usize>, page: Option<usize>, out: &mut Vec<usize>, depth: usize) {
-        if depth > 256 || t.elems.len() >= MAX_ELEMENTS {
+        if depth > 256 || t.elems.len() >= self.limit {
             return;
         }
         match k {
