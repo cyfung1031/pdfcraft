@@ -1311,7 +1311,6 @@ mod tests {
         if gate.claimed.load(Ordering::Acquire) {
             gate.entered.wait();
             gate.release.wait();
-            gate.finished.wait();
         }
         let mut pages = [crashed, receive_before_deadline(&pool)];
         pages.sort_by_key(|page| page.request.page);
