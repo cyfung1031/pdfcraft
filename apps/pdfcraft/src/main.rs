@@ -295,7 +295,17 @@ fn app_creator<'a>(
             app.enable_recovery(pdfcraft_ui_egui::RecoveryStore::new(dir));
         }
         if let Some(state) = &cc.wgpu_render_state {
-            notify_software_renderer(&mut app, state.adapter.get_info().device_type);
+            let adapter = state.adapter.get_info();
+            let max_texture_dimension_2d = state.device.limits().max_texture_dimension_2d;
+            log::info!(
+                "renderer: wgpu; adapter: {} ({:?}, {:?}); max_texture_dimension_2d: {max_texture_dimension_2d}",
+                adapter.name,
+                adapter.device_type,
+                adapter.backend
+            );
+            notify_software_renderer(&mut app, adapter.device_type);
+        } else {
+            log::info!("renderer: OpenGL (glow)");
         }
         // A portable marker whose data folder can't be written (#157): say where settings went.
         if let Some(w) = &pdfcraft_ui_egui::portable::current().unwritable {
