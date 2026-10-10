@@ -6908,9 +6908,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "lopdf",
- "pdfcraft-content",
- "pdfcraft-cos",
- "pdfcraft-measure",
  "png 0.18.1",
  "serde",
  "serde_json",

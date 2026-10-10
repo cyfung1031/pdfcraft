@@ -7,9 +7,6 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1"
-pdfcraft-content = { workspace = true }
-pdfcraft-cos = { workspace = true }
-pdfcraft-measure = { workspace = true }
 lopdf = "0.45"
 png = "0.18"
 serde_json = "1"

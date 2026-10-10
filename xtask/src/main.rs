@@ -6,7 +6,6 @@ mod assets;
 mod corpus;
 mod demo_pdf;
 mod fuzz;
-mod fuzz_measure;
 mod gates;
 mod layers;
 mod macos_integration;
@@ -27,7 +26,6 @@ const COMMANDS: &[(&str, &str, Command)] = &[
     ("corpus", "Fetch the pinned pdf.js test corpus into corpus/ (git-ignored) and verify it; --update-pin re-records the pin", gates::corpus),
     ("check", "Robustness sweep over corpus/ with pdfcraft-cli; fails on crashes or regressions vs xtask/baselines", gates::check),
     ("fuzz", "Mutation fuzzing of open/render/edit/save in child processes; findings in fuzz-out/ (--time 300)", fuzz::run),
-    ("fuzz-measure", "Bounded deterministic fuzzing of content parsing, measure geometry and snap", fuzz_measure::run),
     ("parity", "Validate parity/acrobat-features.toml against the registry, tools and tests; report progress (--json, --partial)", parity::run),
     (
         "macos-integration",
