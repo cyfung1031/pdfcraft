@@ -450,11 +450,13 @@ enum BusyStage {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Busy {
     request: RenderRequest,
     since: std::time::Instant,
     stage: BusyStage,
+    cancelled: Arc<AtomicBool>,
+    valid: Arc<AtomicBool>,
 }
 
 /// State shared by the pool and its workers.
@@ -493,6 +495,24 @@ struct Shared {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn same_request(a: RenderRequest, b: RenderRequest) -> bool {
+    a.page == b.page && a.kind == b.kind && a.tile == b.tile && a.scale.to_bits() == b.scale.to_bits() && a.tag == b.tag
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Shared {
+    fn cancel_in_flight(&self, obsolete: &[RenderRequest]) {
+        let busy = lock(&self.busy);
+        for busy in busy.iter().flatten() {
+            if obsolete.iter().copied().any(|request| same_request(request, busy.request)) {
+                busy.cancelled.store(true, Ordering::Release);
+                busy.valid.store(false, Ordering::Release);
+            }
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -704,13 +724,19 @@ impl RenderPool {
     }
 
     /// Replace desired work (most urgent first), retaining matching in-flight/completed jobs.
-    /// Obsolete results are released before they reach the caller. In-flight work is not killed.
+    /// Obsolete results are released before they reach the caller, and active obsolete renders
+    /// are asked to stop at their next cancellation point.
     ///
     /// The contract: a result is delivered only while its request is in the latest queue.
     /// A caller still waiting for a page (or text, or a thumbnail) must keep listing it in
     /// every call, or the finished result is dropped to save memory.
     pub fn set_queue(&self, requests: Vec<RenderRequest>) {
-        self.shared.queue.replace(requests);
+        #[cfg(not(target_arch = "wasm32"))]
+        let obsolete = self.shared.queue.replace(requests);
+        #[cfg(target_arch = "wasm32")]
+        let _ = self.shared.queue.replace(requests);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.shared.cancel_in_flight(&obsolete);
         self.wake_workers();
     }
 
@@ -765,12 +791,14 @@ impl RenderPool {
                 // Lock order: `busy`, then `stop`.
                 let stop = lock(&self.shared.stop);
                 for (id, slot) in busy.iter_mut().enumerate() {
-                    if let Some(busy) = *slot
+                    if let Some(busy) = slot.clone()
                         && busy.stage != BusyStage::Parsing
                         && busy.since.elapsed() > self.stuck_after
                     {
                         *slot = None; // the worker sees this and exits when it returns
                         // Told to stop at its next operator; its replacement retries the page.
+                        busy.cancelled.store(true, Ordering::Release);
+                        busy.valid.store(false, Ordering::Release);
                         if let Some(s) = stop.get(id) {
                             s.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -820,13 +848,18 @@ impl RenderPool {
 
 impl Drop for RenderPool {
     fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        for busy in lock(&self.shared.busy).iter().flatten() {
+            busy.cancelled.store(true, Ordering::Release);
+            busy.valid.store(false, Ordering::Release);
+        }
         for s in lock(&self.shared.stop).iter() {
             s.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
 
-/// A worker's interpreter settings: the document's, stopping once `stop` is set.
+/// A worker's interpreter settings: the document's, stopping once the request is cancelled.
 #[cfg(not(target_arch = "wasm32"))]
 fn worker_settings(config: &RenderConfig, stop: &Arc<std::sync::atomic::AtomicBool>) -> InterpreterSettings {
     InterpreterSettings { cancelled: Some(stop.clone()), ..config.settings() }
@@ -843,7 +876,6 @@ fn worker(
     stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let warnings = Arc::new(Mutex::new(Vec::new()));
-    let settings = warning_settings(&worker_settings(&config, &stop), warnings.clone());
     // A local cell keeps Pdf borrows used by RenderCache stable. Drop both on an
     // epoch change/panic before publishing an error or taking another request.
     loop {
@@ -863,6 +895,8 @@ fn worker(
                 if shared.queue.cancel_obsolete(req) {
                     continue;
                 }
+                let request_cancelled = Arc::new(AtomicBool::new(false));
+                let request_valid = Arc::new(AtomicBool::new(true));
                 if lock(&shared.stuck).contains(&req.into()) {
                     let error = format!("page {} was skipped earlier because rendering failed or took too long", req.page + 1);
                     let page = RenderedPage {
@@ -889,7 +923,13 @@ fn worker(
                     },
                 );
                 if let Some(slot) = lock(&shared.busy).get_mut(id) {
-                    *slot = Some(Busy { request: req, since: std::time::Instant::now(), stage });
+                    *slot = Some(Busy {
+                        request: req,
+                        since: std::time::Instant::now(),
+                        stage,
+                        cancelled: request_cancelled.clone(),
+                        valid: request_valid.clone(),
+                    });
                 }
                 let (pdf, cache, shared_generation) = parsed.get_or_init(|| {
                     let load = || {
@@ -904,13 +944,24 @@ fn worker(
                         shared.stats.parser_builds.fetch_add(1, Ordering::Relaxed);
                         parse(&bytes, config.password.as_deref())
                     };
-                    match shared.parser.acquire(load, || matches!(wake.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected))) {
+                    match shared.parser.acquire(load, || {
+                        request_cancelled.load(Ordering::Acquire)
+                            || stop.load(Ordering::Acquire)
+                            || matches!(wake.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected))
+                    }) {
                         Some(pdf) => {
                             let shared_generation = pdf.is_some();
                             (pdf, RenderCache::new(), shared_generation)
                         }
                         None => {
-                            let pdf = if set_busy_stage(&shared, id, BusyStage::Parsing) { load().map(Arc::new) } else { None };
+                            let pdf = if !request_cancelled.load(Ordering::Acquire)
+                                && !stop.load(Ordering::Acquire)
+                                && set_busy_stage(&shared, id, BusyStage::Parsing)
+                            {
+                                load().map(Arc::new)
+                            } else {
+                                None
+                            };
                             (pdf, RenderCache::new(), false)
                         }
                     }
@@ -934,7 +985,7 @@ fn worker(
                     }
                     break Some((
                         finish(req, start, Err(("the shared parser was retired".into(), false)), Vec::new()),
-                        Some(shared.parser.valid.clone()),
+                        vec![request_valid, shared.parser.valid.clone()],
                     ));
                 }
                 #[cfg(test)]
@@ -949,9 +1000,13 @@ fn worker(
                     if let Some((page, delay)) = slow
                         && page == req.page
                     {
-                        std::thread::sleep(delay);
+                        let deadline = std::time::Instant::now() + delay;
+                        while std::time::Instant::now() < deadline && !request_cancelled.load(Ordering::Acquire) {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
                     }
                 }
+                let settings = warning_settings(&worker_settings(&config, &request_cancelled), warnings.clone());
                 lock(&warnings).clear();
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     #[cfg(test)]
@@ -975,19 +1030,22 @@ fn worker(
                 if panicked {
                     shared.parser.abandon();
                     lock(&shared.stuck).insert(req.into());
-                    break Some((finish(req, start, r, request_warnings), None));
+                    break Some((finish(req, start, r, request_warnings), vec![request_valid]));
                 }
-                let valid = shared_generation.then(|| shared.parser.valid.clone());
+                let mut valid = vec![request_valid];
+                if *shared_generation {
+                    valid.push(shared.parser.valid.clone());
+                }
                 if *shared_generation && !shared.parser.valid.load(Ordering::Acquire) {
                     break Some((finish(req, start, r, request_warnings), valid));
                 }
-                if out.send_valid(finish(req, start, r, request_warnings), valid).is_err() {
+                if out.send_valid_with_tokens(finish(req, start, r, request_warnings), valid).is_err() {
                     return;
                 }
             }
         }; // drop the parser and its borrowing cache before delivering reset_result
         if let Some((page, valid)) = reset_result
-            && out.send_valid(page, valid).is_err()
+            && out.send_valid_with_tokens(page, valid).is_err()
         {
             return;
         }
@@ -1621,6 +1679,7 @@ mod tests {
         }
         // What the canvas sends next: the page it is still waiting for, then another one.
         pool.set_queue(vec![req(0), req(1)]);
+        assert!(lock(&pool.shared.busy).iter().flatten().any(|busy| { busy.request == req(0) && !busy.cancelled.load(Ordering::Acquire) }));
         let mut answers = Vec::new();
         let t = std::time::Instant::now();
         while answers.len() < 2 || lock(&pool.shared.busy).iter().any(Option::is_some) {
@@ -1637,6 +1696,39 @@ mod tests {
         // Page 2 went to the idle worker instead of waiting behind a second copy of page 1.
         assert_eq!(answers, vec![1, 0]);
         assert_eq!(pool.shared.render_started.load(Ordering::Relaxed), 2, "each page rendered once");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn replacing_an_in_flight_request_does_not_delay_the_replacement() {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        let pool = RenderPool::new(Arc::new(ONE_PAGE_TWICE.to_vec()), 1, RenderConfig::default());
+        let a = RenderRequest { page: 0, scale: 0.5, tag: 101, ..Default::default() };
+        let b = RenderRequest { page: 1, scale: 0.5, tag: 102, ..Default::default() };
+        *lock(&pool.shared.slow_page) = Some((a.page, Duration::from_secs(10)));
+        pool.set_queue(vec![a]);
+
+        let started = Instant::now();
+        while pool.shared.render_started.load(Ordering::Relaxed) == 0 {
+            assert!(started.elapsed() < Duration::from_secs(2), "request A never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let replaced = Instant::now();
+        pool.set_queue(vec![b]);
+        assert!(lock(&pool.shared.busy).iter().flatten().any(|busy| busy.cancelled.load(Ordering::Acquire)), "request A was not cancelled");
+        let page = receive_before_deadline(&pool);
+        assert_eq!(page.request, b);
+        assert!(page.error.is_none(), "replacement request failed: {:?}", page.error);
+        assert!(replaced.elapsed() < Duration::from_secs(3), "obsolete request A delayed B");
+
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < deadline {
+            assert!(pool.try_recv().is_none(), "obsolete request produced a result");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
