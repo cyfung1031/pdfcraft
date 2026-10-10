@@ -191,6 +191,49 @@ fn image_buffer(len: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// PdfCraft patch (#624): the source index that PicScale's nearest-neighbour plan copies for
+/// destination `index` of `dst` samples taken from `src`. It is the same fixed-point centre
+/// sampling as `ResampleNearestPlan`, so these are the samples a nearest resize would copy.
+fn nearest_source_index(src: u32, dst: u32, index: u32) -> usize {
+    let step = (u64::from(src) << 32) / u64::from(dst);
+    ((u64::from(index) * step + (step >> 1)) >> 32) as usize
+}
+
+/// PdfCraft patch (#624): nearest-resizes a colour image and its same-sized soft mask straight
+/// into premultiplied RGBA of `target` size. Colour and mask come from the same source pixel, so
+/// this equals a nearest resize of the expanded RGBA followed by premultiplying each pixel.
+fn nearest_premultiplied_rgba(
+    color: &ImageData,
+    alpha: &[u8],
+    source: (u32, u32),
+    target: (u32, u32),
+) -> Option<Vec<u8>> {
+    let (samples, channels) = match color {
+        ImageData::Luma(luma) => (luma.data.as_slice(), 1),
+        ImageData::Rgb(rgb) => (rgb.data.as_slice(), 3),
+    };
+    let mut out = image_buffer(image_byte_len(target.0, target.1, 4, MAX_IMAGE_PIXELS)?)?;
+    for ty in 0..target.1 {
+        let sy = nearest_source_index(source.1, target.1, ty);
+        for tx in 0..target.0 {
+            let si = sy * source.0 as usize + nearest_source_index(source.0, target.0, tx);
+            let [r, g, b] = match samples.get(si * channels..si * channels + channels)? {
+                [v] => [*v; 3],
+                [r, g, b] => [*r, *g, *b],
+                _ => return None,
+            };
+            let a = *alpha.get(si)?;
+            out.extend_from_slice(
+                &AlphaColor::from_rgba8(r, g, b, a)
+                    .premultiply()
+                    .to_rgba8()
+                    .to_u8_array(),
+            );
+        }
+    }
+    Some(out)
+}
+
 /// PdfCraft patch: most pieces one dashed stroke may be cut into. Stroke expansion keeps every
 /// dash, so a pattern that is tiny next to its path asks for billions: a fuzzed `/D [[11] 0]` on
 /// a line from x = 92234775807 allocated over 5 GB, and `[0.000001] 0 d` on a 20 pt line over
@@ -702,12 +745,26 @@ impl Renderer {
         }
         let needs_resize = (new_width, new_height) != (source_width, source_height);
 
+        // PdfCraft patch (#624): a minified image with a soft mask that is not interpolated is
+        // nearest-sampled straight into premultiplied target RGBA. That skips the full-resolution
+        // RGBA copy below and the premultiply pass after it.
+        let direct = match &alpha_data {
+            Some(alpha) if needs_resize && !interpolate => nearest_premultiplied_rgba(
+                &image_data,
+                &alpha.data,
+                (source_width, source_height),
+                (new_width, new_height),
+            ),
+            _ => None,
+        };
+        let premultiplied = direct.is_some();
         // Preserve the single-channel/RGB fast paths. With alpha, expand directly to RGBA;
         // every source and alpha length was validated before zipping or allocating.
-        let (data, format) = match (image_data, alpha_data) {
-            (ImageData::Luma(luma), None) => (luma.data, ImagePixelFormat::Luma),
-            (ImageData::Rgb(rgb), None) => (rgb.data, ImagePixelFormat::Rgb),
-            (image, Some(alpha)) => {
+        let (data, format) = match (direct, image_data, alpha_data) {
+            (Some(rgba), _, _) => (rgba, ImagePixelFormat::Rgba),
+            (None, ImageData::Luma(luma), None) => (luma.data, ImagePixelFormat::Luma),
+            (None, ImageData::Rgb(rgb), None) => (rgb.data, ImagePixelFormat::Rgb),
+            (None, image, Some(alpha)) => {
                 let Some(len) = source_byte_len(source_width, source_height, 4, MAX_IMAGE_PIXELS)
                 else {
                     return;
@@ -741,7 +798,9 @@ impl Renderer {
                 (rgba, ImagePixelFormat::Rgba)
             }
         };
-        let (data, mut img_width, mut img_height) = if needs_resize {
+        let (data, mut img_width, mut img_height) = if premultiplied {
+            (data, new_width, new_height)
+        } else if needs_resize {
             self.resize_image_data(
                 data,
                 source_width,
@@ -786,7 +845,7 @@ impl Renderer {
             }
             rgba
         };
-        if has_alpha {
+        if has_alpha && !premultiplied {
             let (chunks, _) = rgba_data.as_chunks_mut::<4>();
             for chunk in chunks {
                 let [r, g, b, a] = *chunk;

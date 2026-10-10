@@ -4057,6 +4057,20 @@ trailer << /Root 1 0 R >>
     }
 
     #[test]
+    fn non_integer_minification_samples_colour_and_mask_from_the_same_columns() {
+        // Ten gray columns with a soft mask, drawn six pixels wide: columns 0, 2, 4, 5, 7 and 9 are
+        // sampled, so the mask must pick the same columns as the colours.
+        let ramp = [10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        let mask = [255u8, 0, 0, 0, 255, 255, 0, 0, 0, 255];
+        let page = draw_minified_image("DeviceGray", (10, 1), None, &ramp, Some(&mask), (6, 1));
+        // Opaque columns keep their gray; transparent columns show the white page.
+        assert_eq!(
+            page.rgba.as_chunks::<4>().0.to_vec(),
+            vec![[10, 10, 10, 255], [255, 255, 255, 255], [50, 50, 50, 255], [60, 60, 60, 255], [255, 255, 255, 255], [100, 100, 100, 255]]
+        );
+    }
+
+    #[test]
     fn non_interpolated_alpha_images_keep_their_colours_and_mask_when_minified() {
         let palette: [[u8; 3]; 8] = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], [0, 255, 255]];
         let rgb: Vec<u8> = block_source(palette).concat();
