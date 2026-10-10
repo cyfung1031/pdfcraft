@@ -2145,6 +2145,82 @@ trailer << /Root 1 0 R >>
     }
 
     #[test]
+    fn shared_form_xobject_uses_each_pages_resource_context() {
+        let form = "/CS1 cs 0.5 0.5 0.5 sc 10 10 30 30 re f";
+        let page_content = "/F Do";
+        let pdf = format!(
+            "%PDF-1.7\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 /MediaBox [0 0 50 50] >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /Resources << /XObject << /F 4 0 R >> /ColorSpace << /CS1 /DeviceRGB >> >> /Contents 5 0 R >> endobj\n\
+             4 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 50 50] /Length {} >> stream\n{form}\nendstream endobj\n\
+             5 0 obj << /Length {} >> stream\n{page_content}\nendstream endobj\n\
+             6 0 obj << /Type /Page /Parent 2 0 R /Resources << /XObject << /F 4 0 R >> /ColorSpace << /CS1 [/CalRGB << /WhitePoint [0.9505 1 1.089] /Gamma [2 2 2] /Matrix [1 0 0 0 1 0 0 0 1] >>] >> >> /Contents 7 0 R >> endobj\n\
+             7 0 obj << /Length {} >> stream\n{page_content}\nendstream endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+            form.len(),
+            page_content.len(),
+            page_content.len()
+        )
+        .into_bytes();
+        let mut renderer = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+        let first = renderer.render(RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+        let second = renderer.render(RenderRequest { page: 1, scale: 1.0, ..Default::default() });
+        assert!(first.error.is_none() && second.error.is_none(), "{:?} / {:?}", first.error, second.error);
+
+        let pixel = |page: &RenderedPage| {
+            let offset = ((20 * page.width + 20) * 4) as usize;
+            [page.rgba[offset], page.rgba[offset + 1], page.rgba[offset + 2], page.rgba[offset + 3]]
+        };
+        let first_pixel = pixel(&first);
+        let second_pixel = pixel(&second);
+        assert_ne!(first_pixel, second_pixel, "the same Form XObject must resolve /CS1 in each page's resources");
+        assert_ne!(first_pixel, [255, 255, 255, 255]);
+        assert_ne!(second_pixel, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn shared_soft_mask_uses_each_inherited_resource_context() {
+        let page_body = "/A Do /B Do";
+        let form_a = "/GS gs 1 0 0 rg 0 0 40 40 re f";
+        let form_b = "/GS gs 0 0 1 rg 60 0 40 40 re f";
+        let mask_body = "/FILL Do";
+        let white = "1 g 0 0 100 100 re f";
+        let black = "0 g 0 0 100 100 re f";
+        let pdf = format!(
+            "%PDF-1.7\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 100 100] >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /Resources << /XObject << /A 4 0 R /B 5 0 R >> >> /Contents 6 0 R >> endobj\n\
+             4 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /ExtGState << /GS 8 0 R >> /XObject << /FILL 9 0 R >> >> /Length {} >> stream\n{form_a}\nendstream endobj\n\
+             5 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << /ExtGState << /GS 8 0 R >> /XObject << /FILL 10 0 R >> >> /Length {} >> stream\n{form_b}\nendstream endobj\n\
+             6 0 obj << /Length {} >> stream\n{page_body}\nendstream endobj\n\
+             8 0 obj << /Type /ExtGState /SMask 11 0 R >> endobj\n\
+             9 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Length {} >> stream\n{white}\nendstream endobj\n\
+             10 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Length {} >> stream\n{black}\nendstream endobj\n\
+             11 0 obj << /Type /Mask /S /Luminosity /G 12 0 R >> endobj\n\
+             12 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 100 100] /Group << /S /Transparency /CS /DeviceGray >> /Length {} >> stream\n{mask_body}\nendstream endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+            form_a.len(),
+            form_b.len(),
+            page_body.len(),
+            white.len(),
+            black.len(),
+            mask_body.len()
+        )
+        .into_bytes();
+        let mut renderer = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+        let page = renderer.render(RenderRequest { page: 0, scale: 1.0, ..Default::default() });
+        assert!(page.error.is_none(), "{:?}", page.error);
+        let pixel = |x: u32, y: u32| {
+            let offset = ((y * page.width + x) * 4) as usize;
+            [page.rgba[offset], page.rgba[offset + 1], page.rgba[offset + 2], page.rgba[offset + 3]]
+        };
+        assert_eq!(pixel(20, 80), [255, 0, 0, 255], "the white inherited mask makes form A visible");
+        assert_eq!(pixel(80, 80), [255, 255, 255, 255], "the black inherited mask must not reuse form A's cached pixels");
+    }
+
+    #[test]
     fn renders_a_blue_rectangle() {
         let pool = RenderPool::new(Arc::new(ONE_PAGE.to_vec()), 1, RenderConfig::default());
         pool.set_queue(vec![RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 7 }]);
@@ -2160,6 +2236,45 @@ trailer << /Root 1 0 R >>
         let px = |x: u32, y: u32| &page.rgba[((y * page.width + x) * 4) as usize..][..4];
         assert_eq!(px(20, 30), &[0, 0, 255, 255]);
         assert_eq!(px(80, 5), &[255, 255, 255, 255]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn page_pixels_are_invariant_to_render_worker_count() {
+        let blue = "0 0 1 rg 10 10 30 20 re f";
+        let red = "1 0 0 rg 20 5 40 35 re f";
+        let pdf = format!(
+            "%PDF-1.4\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 100 50] >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{blue}\nendstream endobj\n\
+             5 0 obj << /Type /Page /Parent 2 0 R /Contents 6 0 R >> endobj\n\
+             6 0 obj << /Length {} >> stream\n{red}\nendstream endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+            blue.len(),
+            red.len()
+        )
+        .into_bytes();
+        let bytes = Arc::new(pdf);
+        let mut reference = PageRenderer::new(bytes.clone(), RenderConfig::default());
+        let expected: Vec<_> = (0..2).map(|page| reference.render(RenderRequest { page, scale: 1.0, ..Default::default() })).collect();
+        assert!(expected.iter().all(|page| page.error.is_none()));
+
+        for workers in [1, 2, 4] {
+            let pool = RenderPool::new(bytes.clone(), workers, RenderConfig::default());
+            pool.set_queue((0..2).map(|page| RenderRequest { page, scale: 1.0, ..Default::default() }).collect());
+            let mut actual = [receive_before_deadline(&pool), receive_before_deadline(&pool)];
+            actual.sort_by_key(|page| page.request.page);
+            for (page, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                assert!(actual.error.is_none(), "{workers} workers, page {page}: {:?}", actual.error);
+                assert_eq!(
+                    (actual.width, actual.height, &actual.rgba),
+                    (expected.width, expected.height, &expected.rgba),
+                    "{workers} workers, page {page}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2736,6 +2851,50 @@ trailer << /Root 1 0 R >>
         let red = render(pdf("1 0 0 rg 0 0 10 10 re f"));
         assert!(red.error.is_none(), "{:?}", red.error);
         assert_eq!(&red.rgba[((20 * 40 + 20) * 4)..][..4], &[255, 0, 0, 255], "a normal tiling pattern still paints");
+    }
+
+    #[test]
+    fn tiling_pattern_form_cycles_are_bounded_and_finite_nesting_paints() {
+        let cases = [
+            ("self-cycle", "/Pattern cs /P1 scn 0 0 10 10 re f 0 0 1 rg 0 0 10 10 re f"),
+            ("pattern-form-cycle", "/F Do 0 0 1 rg 0 0 10 10 re f"),
+            ("finite-nesting", "/Pattern cs /P2 scn 0 0 10 10 re f"),
+        ];
+        let pattern_b = "0 0 1 rg 0 0 10 10 re f";
+        let form = "/Pattern cs /P1 scn 0 0 10 10 re f";
+        let page_content = "/Pattern cs /P1 scn 0 0 40 40 re f 1 0 0 rg 32 32 8 8 re f";
+        for (case, pattern_a) in cases {
+            let pdf = format!(
+                "%PDF-1.7\n\
+                 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+                 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 40 40] >> endobj\n\
+                 3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Pattern << /P1 5 0 R /P2 6 0 R >> /XObject << /F 7 0 R >> >> >> endobj\n\
+                 4 0 obj << /Length {} >> stream\n{page_content}\nendstream endobj\n\
+                 5 0 obj << /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Length {} >> stream\n{pattern_a}\nendstream endobj\n\
+                 6 0 obj << /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Length {} >> stream\n{pattern_b}\nendstream endobj\n\
+                 7 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Length {} >> stream\n{form}\nendstream endobj\n\
+                 trailer << /Root 1 0 R >>\n%%EOF",
+                page_content.len(),
+                pattern_a.len(),
+                pattern_b.len(),
+                form.len()
+            )
+            .into_bytes();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut renderer = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+                let _ = tx.send(renderer.render(RenderRequest { page: 0, scale: 1.0, ..Default::default() }));
+            });
+            let page = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| panic!("{case}: render did not finish"));
+            assert!(page.error.is_none(), "{case}: {:?}", page.error);
+            assert_eq!((page.width, page.height), (40, 40), "{case}");
+            let pixel = |x: u32, y: u32| {
+                let offset = ((y * page.width + x) * 4) as usize;
+                [page.rgba[offset], page.rgba[offset + 1], page.rgba[offset + 2], page.rgba[offset + 3]]
+            };
+            assert_eq!(pixel(1, 38), [0, 0, 255, 255], "{case}: nested pattern content paints");
+            assert_eq!(pixel(35, 4), [255, 0, 0, 255], "{case}: page content after the pattern still paints");
+        }
     }
 
     /// From `cargo xtask fuzz`: a Type 3 font without /Resources inherits the page's, where its
@@ -3381,6 +3540,46 @@ trailer << /Root 1 0 R >>
         }
     }
 
+    #[test]
+    fn form_cycles_are_bounded_and_finite_nesting_paints() {
+        let cases = [
+            ("self-cycle", "/A Do 0 0 1 rg 0 0 8 8 re f", "0 0 1 rg 0 0 8 8 re f"),
+            ("two-form-cycle", "/B Do 0 0 1 rg 0 0 8 8 re f", "/A Do 0 0 1 rg 0 0 8 8 re f"),
+            ("finite-nesting", "/B Do", "0 0 1 rg 0 0 8 8 re f"),
+        ];
+        let page_content = "/A Do 1 0 0 rg 32 32 8 8 re f";
+        for (case, form_a, form_b) in cases {
+            let pdf = format!(
+                "%PDF-1.7\n\
+                 1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+                 2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 40 40] >> endobj\n\
+                 3 0 obj << /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /XObject << /A 5 0 R /B 6 0 R >> >> >> endobj\n\
+                 4 0 obj << /Length {} >> stream\n{page_content}\nendstream endobj\n\
+                 5 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 40 40] /Length {} >> stream\n{form_a}\nendstream endobj\n\
+                 6 0 obj << /Type /XObject /Subtype /Form /BBox [0 0 40 40] /Length {} >> stream\n{form_b}\nendstream endobj\n\
+                 trailer << /Root 1 0 R >>\n%%EOF",
+                page_content.len(),
+                form_a.len(),
+                form_b.len()
+            )
+            .into_bytes();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let mut renderer = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
+                let _ = tx.send(renderer.render(RenderRequest { page: 0, scale: 1.0, ..Default::default() }));
+            });
+            let page = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| panic!("{case}: render did not finish"));
+            assert!(page.error.is_none(), "{case}: {:?}", page.error);
+            assert_eq!((page.width, page.height), (40, 40), "{case}");
+            let pixel = |x: u32, y: u32| {
+                let offset = ((y * page.width + x) * 4) as usize;
+                [page.rgba[offset], page.rgba[offset + 1], page.rgba[offset + 2], page.rgba[offset + 3]]
+            };
+            assert_eq!(pixel(3, 35), [0, 0, 255, 255], "{case}: nested form content paints");
+            assert_eq!(pixel(35, 4), [255, 0, 0, 255], "{case}: page content after the form still paints");
+        }
+    }
+
     /// Review of the decompression-bomb fix: one stream stopping at `MAX_DECODED_STREAM` isn't
     /// enough when streams add up. A page's `/Contents` array can name the same bomb many times,
     /// and a form that paints itself nests fifty deep, each level keeping its content while the
@@ -3834,6 +4033,76 @@ trailer << /Root 1 0 R >>
         assert!(px.rgba[((50 * px.width + 25) * 4) as usize] < 64, "the glyph is drawn");
     }
 
+    /// A page's `/UserUnit` (the size of its unit in points) scales the page and everything on
+    /// it, after the crop box and before `/Rotate`, as Acrobat shows such pages: with
+    /// `/UserUnit 2`, scale 1 renders pixel for pixel what scale 2 renders without it. As in
+    /// Acrobat, values below 1, values that aren't numbers and a value on a parent `/Pages`
+    /// node count as 1, and values over 75,000 count as 75,000.
+    #[test]
+    fn user_unit_scales_the_page_and_everything_on_it() {
+        let content = "1 0 0 rg 20 10 30 20 re f BT /F1 18 Tf 15 50 Td (Hg) Tj ET q 16 0 0 8 60 30 cm BI /W 2 /H 2 /CS /RGB /BPC 8 /F /AHx ID 0000FFFF000000FF00FFFF00> EI Q";
+        let pdf = |page: &str, parent: &str| {
+            format!(
+                "%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 {parent} >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 80] /CropBox [10 6 90 76] {page} /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj
+4 0 obj << /Length {} >> stream
+{content}
+endstream endobj
+5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+6 0 obj 2 endobj
+trailer << /Root 1 0 R >>
+%%EOF",
+                content.len()
+            )
+            .into_bytes()
+        };
+        let render = |bytes: Vec<u8>, scale: f32| {
+            let mut r = PageRenderer::new(Arc::new(bytes), RenderConfig::default());
+            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale, tag: 0 });
+            assert!(p.error.is_none(), "{:?}", p.error);
+            p
+        };
+        let glyphs = |bytes: Vec<u8>| {
+            let parsed = Pdf::new(Arc::new(bytes)).expect("parses");
+            crate::text::extract_page(&parsed, 0, &InterpreterSettings::default()).expect("text").glyphs
+        };
+        let size = |bytes: Vec<u8>| {
+            let p = &crate::inspect(Arc::new(bytes), None).expect("opens").pages[0];
+            (p.width, p.height)
+        };
+        for rotate in [0, 90, 180, 270] {
+            let turned = format!("/Rotate {rotate}");
+            let (w, h) = if rotate % 180 == 0 { (80.0, 70.0) } else { (70.0, 80.0) };
+            let plain = render(pdf(&turned, ""), 2.0);
+            let one = render(pdf(&turned, ""), 1.0);
+            let plain_glyphs = glyphs(pdf(&turned, ""));
+            for unit in ["/UserUnit 2", "/UserUnit 6 0 R"] {
+                let page = format!("{turned} {unit}");
+                assert_eq!(size(pdf(&page, "")), (w * 2.0, h * 2.0), "{page}");
+                let doubled = render(pdf(&page, ""), 1.0);
+                assert_eq!((doubled.width, doubled.height), (plain.width, plain.height), "{page}");
+                assert!(doubled.rgba == plain.rgba, "{page}: the page renders as at twice the scale");
+                let doubled_glyphs = glyphs(pdf(&page, ""));
+                assert_eq!(doubled_glyphs.len(), plain_glyphs.len(), "{page}");
+                for (d, p) in doubled_glyphs.iter().zip(&plain_glyphs) {
+                    assert_eq!(d.rect, p.rect.map(|v| v * 2.0), "{page}: text layer");
+                }
+            }
+            for unit in ["/UserUnit 1", "/UserUnit 0", "/UserUnit -1", "/UserUnit 0.5", "/UserUnit /Two", "/UserUnit (2)"] {
+                let page = format!("{turned} {unit}");
+                assert_eq!(size(pdf(&page, "")), (w, h), "{page}");
+                assert!(render(pdf(&page, ""), 1.0).rgba == one.rgba, "{page} counts as 1");
+            }
+            assert_eq!(size(pdf(&turned, "/UserUnit 2")), (w, h), "not inherited from /Pages");
+            assert!(render(pdf(&turned, "/UserUnit 2"), 1.0).rgba == one.rgba, "not inherited from /Pages");
+            for unit in ["/UserUnit 75000", "/UserUnit 100000"] {
+                assert_eq!(size(pdf(&format!("{turned} {unit}"), "")), (w * 75_000.0, h * 75_000.0), "{unit}");
+            }
+        }
+    }
+
     #[test]
     fn tiles_match_full_render() {
         let mut r = PageRenderer::new(Arc::new(ONE_PAGE.to_vec()), RenderConfig::default());
@@ -3848,6 +4117,54 @@ trailer << /Root 1 0 R >>
                 assert_eq!(a, b, "pixel {x},{y}");
             }
         }
+    }
+
+    // A tile seam must not change the raster when large-page work is stitched back together.
+    #[test]
+    fn stitched_render_partitions_match_a_whole_render() {
+        let content =
+            "0 0 1 rg 0 0 200 200 re f\n1 0 0 RG 2 w 0 100 m 200 100 l S\nBT /F1 18 Tf 20 150 Td (tile text) Tj ET\nq 40 0 0 40 100 100 cm /Im Do Q";
+        let pdf = format!(
+            "%PDF-1.4\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << /Im 6 0 R >> >> >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+             5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n\
+             6 0 obj << /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 25 >> stream\nFF000000FF00000000FFFFFFFF>\nendstream endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+            content.len()
+        );
+        let mut renderer = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+        let request = RenderRequest { scale: 6.0, ..Default::default() };
+        let whole = renderer.render(request);
+        assert!(whole.error.is_none(), "{:?}", whole.error);
+        assert_eq!((whole.width, whole.height), (1200, 1200));
+
+        let mut assert_partition = |tile_width: u32, tile_height: u32| {
+            let mut stitched = vec![0; whole.rgba.len()];
+            for y in (0..whole.height).step_by(tile_height as usize) {
+                for x in (0..whole.width).step_by(tile_width as usize) {
+                    let tile = Tile { x, y, w: tile_width.min(whole.width - x), h: tile_height.min(whole.height - y) };
+                    let part = renderer.render(RenderRequest { tile: Some(tile), ..request });
+                    assert!(part.error.is_none(), "tile {tile:?}: {:?}", part.error);
+                    assert_eq!((part.width, part.height), (tile.w, tile.h));
+                    for row in 0..tile.h {
+                        let src = (row * tile.w * 4) as usize;
+                        let dst = ((y + row) * whole.width * 4 + x * 4) as usize;
+                        let len = (tile.w * 4) as usize;
+                        stitched[dst..dst + len].copy_from_slice(&part.rgba[src..src + len]);
+                    }
+                }
+            }
+            assert_eq!(stitched.as_slice(), whole.rgba.as_ref(), "partition {tile_width}×{tile_height}");
+        };
+
+        for bands in [2, 4, 8] {
+            assert_partition(whole.width, whole.height.div_ceil(bands));
+        }
+        assert_partition(1024, 1024);
+        assert_partition(127, 131);
     }
 
     /// hayro skips drawing a path that can't paint the canvas (vendored patch (9)), so a tile no
