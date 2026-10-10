@@ -774,6 +774,51 @@ fn line_dict(coords: [f64; 4], ending: &str) -> pdfcraft_cos::Dict {
 }
 
 #[test]
+fn malformed_optional_interior_color_does_not_hide_shape_strokes() {
+    let mut square = pdfcraft_cos::Dict::new();
+    square.set(b"Subtype".to_vec(), Object::name("Square"));
+    square.set(b"Rect".to_vec(), Object::Array([0.0, 0.0, 40.0, 30.0].into_iter().map(Object::Real).collect()));
+    square.set(b"C".to_vec(), Object::Array([1.0, 0.0, 0.0].into_iter().map(Object::Real).collect()));
+    let malformed = Object::Array(vec![Object::Real(1.0), Object::Real(0.0)]);
+    square.set(b"IC".to_vec(), malformed.clone());
+    let mut circle = square.clone();
+    circle.set(b"Subtype".to_vec(), Object::name("Circle"));
+
+    let mut polygon = pdfcraft_cos::Dict::new();
+    polygon.set(b"Subtype".to_vec(), Object::name("Polygon"));
+    polygon.set(b"Rect".to_vec(), Object::Array([0.0, 0.0, 40.0, 30.0].into_iter().map(Object::Real).collect()));
+    polygon.set(b"C".to_vec(), Object::Array([1.0, 0.0, 0.0].into_iter().map(Object::Real).collect()));
+    polygon.set(b"Vertices".to_vec(), Object::Array([0.0, 0.0, 40.0, 0.0, 20.0, 30.0].into_iter().map(Object::Real).collect()));
+    polygon.set(b"IC".to_vec(), malformed.clone());
+
+    let mut line = line_dict([0.0, 0.0, 40.0, 30.0], "None");
+    line.set(b"IC".to_vec(), malformed.clone());
+    let mut polyline = pdfcraft_cos::Dict::new();
+    polyline.set(b"Subtype".to_vec(), Object::name("PolyLine"));
+    polyline.set(b"Rect".to_vec(), Object::Array([0.0, 0.0, 40.0, 30.0].into_iter().map(Object::Real).collect()));
+    polyline.set(b"C".to_vec(), Object::Array([1.0, 0.0, 0.0].into_iter().map(Object::Real).collect()));
+    polyline.set(b"Vertices".to_vec(), Object::Array([0.0, 0.0, 40.0, 0.0, 20.0, 30.0].into_iter().map(Object::Real).collect()));
+    polyline.set(b"LE".to_vec(), Object::Array(vec![Object::name("None"), Object::name("None")]));
+    polyline.set(b"IC".to_vec(), malformed);
+
+    for (name, annotation) in [("Square", square), ("Circle", circle), ("Polygon", polygon), ("Line", line), ("PolyLine", polyline)] {
+        assert!(appearance::build(&annotation).is_some(), "malformed optional /IC must not hide a valid {name} stroke");
+    }
+
+    let doc = document_of(&[
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 50 40] >>",
+        b"<< /Type /Page /Parent 2 0 R /Annots [4 0 R] >>",
+        b"<< /Type /Annot /Subtype /Square /Rect [5 5 45 35] /C [1 0 0] /IC [1 0] >>",
+    ]);
+    let display = with_missing_appearances(&doc).expect("the valid square gets a fallback appearance");
+    let rendered = list(&display, 0).remove(0);
+    let content = ap_content(&display, &rendered);
+    assert!(content.contains("1 0 0 RG") && content.contains(" re\nS\n"), "the stroke remains drawable without a fill: {content}");
+    assert!(list(&doc, 0)[0].get(b"AP").is_none(), "display generation leaves the source document unchanged");
+}
+
+#[test]
 fn every_line_ending_is_drawn() {
     let filled = [LineEnding::Square, LineEnding::Circle, LineEnding::Diamond, LineEnding::ClosedArrow, LineEnding::RClosedArrow];
     let (mut open, mut reverse) = (String::new(), String::new());
