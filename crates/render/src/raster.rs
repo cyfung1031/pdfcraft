@@ -3932,64 +3932,120 @@ trailer << /Root 1 0 R >>
         assert_eq!(&page.rgba[((38 * 40 + 1) * 4)..][..4], &[255, 0, 0, 255]);
     }
 
+    /// Hex-encodes `bytes` for an `/ASCIIHexDecode` stream.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// An 8×4 source of 2×2 blocks: block column `x / 2` and row `y / 2` takes `levels[(y / 2) * 4 + x / 2]`.
+    fn block_source<T: Copy>(levels: [T; 8]) -> Vec<T> {
+        (0..32).map(|i| levels[(i / 16) * 4 + (i % 8) / 2]).collect()
+    }
+
+    /// Draws one `size` image of colour space `space` (`data` as raw samples, with an optional gray
+    /// `/SMask` of the same size) at 1:1 on a `device`-sized page, writing `/Interpolate` when given.
+    fn draw_minified_image(
+        space: &str,
+        size: (u32, u32),
+        interpolate: Option<bool>,
+        data: &[u8],
+        alpha: Option<&[u8]>,
+        device: (u32, u32),
+    ) -> RenderedPage {
+        let (width, height) = size;
+        let interp = interpolate.map_or_else(String::new, |value| format!("/Interpolate {value} "));
+        let (smask, mask) = match alpha {
+            Some(alpha) => (
+                "/SMask 6 0 R ",
+                format!(
+                    "6 0 obj << /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length {} >> stream\n{}>\nendstream endobj\n",
+                    hex(alpha).len() + 1,
+                    hex(alpha)
+                ),
+            ),
+            None => ("", String::new()),
+        };
+        let image = hex(data);
+        let content = format!("q {} 0 0 {} 0 0 cm /Im0 Do Q", device.0, device.1);
+        let pdf = format!(
+            "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{content}\nendstream endobj\n\
+             5 0 obj << /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /{space} /BitsPerComponent 8 {interp}{smask}/Filter /ASCIIHexDecode /Length {} >> stream\n{image}>\nendstream endobj\n\
+             {mask}trailer << /Root 1 0 R >>\n%%EOF\n",
+            device.0,
+            device.1,
+            content.len(),
+            image.len() + 1
+        );
+        let mut renderer = PageRenderer::new(Arc::new(pdf.into_bytes()), RenderConfig::default());
+        let page = renderer.render(RenderRequest { page: 0, kind: RequestKind::Pixels, scale: 1.0, ..Default::default() });
+        assert!(page.error.is_none(), "{:?}", page.error);
+        assert_eq!((page.width, page.height), device);
+        page
+    }
+
     /// Issue #624: an image drawn below its source resolution was pre-resampled with Catmull-Rom
     /// even when `/Interpolate` was false (or absent, whose PDF default is false). That blends
     /// neighboring samples before the renderer's later non-interpolating image sampler sees them,
     /// making scans, screenshots and rasterized text look soft.
     #[test]
     fn non_interpolated_images_are_not_smoothed_when_minified() {
-        let render = |interpolate: Option<bool>| {
-            // Eight alternating black/white RGB columns, repeated over four rows. Painting the
-            // 8×4 source into 4×2 device pixels forces Hayro's image pre-resize path (0.5×).
-            let mut image = Vec::with_capacity(8 * 4 * 3);
-            for _ in 0..4 {
-                for x in 0..8 {
-                    let v = if x % 2 == 0 { 0u8 } else { 255u8 };
-                    image.extend_from_slice(&[v, v, v]);
-                }
-            }
-            let interp = interpolate.map_or_else(String::new, |value| format!("/Interpolate {value}"));
-            let content = "q 4 0 0 2 0 0 cm /Im0 Do Q";
-            let mut pdf = format!(
-                "%PDF-1.7
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 4 2] /Contents 4 0 R /Resources << /XObject << /Im0 5 0 R >> >> >> endobj
-4 0 obj << /Length {} >> stream
-{content}
-endstream endobj
-5 0 obj << /Type /XObject /Subtype /Image /Width 8 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 {interp} /Length {} >> stream
-",
-                content.len(),
-                image.len()
-            )
-            .into_bytes();
-            pdf.extend_from_slice(&image);
-            pdf.extend_from_slice(b"\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n");
-            let mut r = PageRenderer::new(Arc::new(pdf), RenderConfig::default());
-            let p = r.render(RenderRequest { page: 0, kind: RequestKind::Pixels, tile: None, scale: 1.0, tag: 0 });
-            assert!(p.error.is_none(), "{interpolate:?}: {:?}", p.error);
-            assert_eq!((p.width, p.height), (4, 2));
-            p
-        };
+        // Top band K W R G, bottom band B Y M C. Nearest 8×4 → 4×2 sampling picks each block's
+        // pixel, so every device pixel is one palette colour; Catmull-Rom blends across blocks.
+        let palette: [[u8; 3]; 8] = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], [0, 255, 255]];
+        let rgb: Vec<u8> = block_source(palette).concat();
+        let exact: Vec<[u8; 4]> = palette.iter().map(|c| [c[0], c[1], c[2], 255]).collect();
+        let pixels = |p: &RenderedPage| p.rgba.as_chunks::<4>().0.to_vec();
 
-        let crisp = |p: &RenderedPage| p.rgba.as_chunks::<4>().0.iter().all(|px| px[..3].iter().all(|&c| c <= 16 || c >= 239) && px[3] == 255);
+        // `/Interpolate` defaults to false, and explicit false is equivalent.
+        let omitted = draw_minified_image("DeviceRGB", (8, 4), None, &rgb, None, (4, 2));
+        assert_eq!(pixels(&omitted), exact, "default interpolation");
+        let disabled = draw_minified_image("DeviceRGB", (8, 4), Some(false), &rgb, None, (4, 2));
+        assert_eq!(&omitted.rgba[..], &disabled.rgba[..], "/Interpolate false must match the default");
 
-        // `/Interpolate` defaults to false, and explicit false is equivalent. Neither path may
-        // invent mid-tones while minifying this hard-edged source image.
-        let omitted = render(None);
-        assert!(crisp(&omitted), "default interpolation produced smoothed pixels: {:?}", omitted.rgba.as_chunks::<4>().0);
-        let disabled = render(Some(false));
-        assert!(crisp(&disabled), "/Interpolate false produced smoothed pixels: {:?}", disabled.rgba.as_chunks::<4>().0);
+        // The fix must not disable interpolation: the same source asking for it blends blocks.
+        let enabled = draw_minified_image("DeviceRGB", (8, 4), Some(true), &rgb, None, (4, 2));
+        assert_ne!(pixels(&enabled), exact, "/Interpolate true should still blend");
+        assert!(pixels(&enabled).iter().any(|px| px[..3].iter().any(|&c| (32..=223).contains(&c))), "/Interpolate true made no mid-tone");
+    }
 
-        // The fix must not globally disable image interpolation. The same source explicitly
-        // asking for interpolation should still contain at least one blended sample.
-        let enabled = render(Some(true));
-        assert!(
-            enabled.rgba.as_chunks::<4>().0.iter().any(|px| (32..=223).contains(&px[0])),
-            "/Interpolate true did not produce a blended sample: {:?}",
-            enabled.rgba.as_chunks::<4>().0
-        );
+    #[test]
+    fn non_interpolated_gray_images_are_not_smoothed_when_minified() {
+        let levels = [0u8, 255, 85, 170, 40, 200, 120, 230];
+        let page = draw_minified_image("DeviceGray", (8, 4), None, &block_source(levels), None, (4, 2));
+        let expected: Vec<[u8; 4]> = levels.iter().map(|&v| [v, v, v, 255]).collect();
+        assert_eq!(page.rgba.as_chunks::<4>().0.to_vec(), expected);
+    }
+
+    #[test]
+    fn non_integer_minification_samples_the_same_columns() {
+        // Ten columns drawn six pixels wide: centre sampling reads columns 0, 2, 4, 5, 7 and 9.
+        let ramp = [10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100];
+        let page = draw_minified_image("DeviceGray", (10, 1), None, &ramp, None, (6, 1));
+        let grays: Vec<u8> = page.rgba.as_chunks::<4>().0.iter().map(|px| px[0]).collect();
+        assert_eq!(grays, [10, 30, 50, 60, 80, 100]);
+    }
+
+    #[test]
+    fn non_interpolated_alpha_images_keep_their_colours_and_mask_when_minified() {
+        let palette: [[u8; 3]; 8] = [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], [0, 255, 255]];
+        let rgb: Vec<u8> = block_source(palette).concat();
+        let alpha = block_source([255u8, 0, 128, 255, 0, 255, 64, 128]);
+        let page = draw_minified_image("DeviceRGB", (8, 4), None, &rgb, Some(&alpha), (4, 2));
+        // Premultiplied colours composited over the white page: alpha 0 shows the page.
+        let expected = vec![
+            [0, 0, 0, 255],
+            [255, 255, 255, 255],
+            [255, 127, 127, 255],
+            [0, 255, 0, 255],
+            [255, 255, 255, 255],
+            [255, 255, 0, 255],
+            [255, 191, 255, 255],
+            [127, 255, 255, 255],
+        ];
+        assert_eq!(page.rgba.as_chunks::<4>().0.to_vec(), expected);
     }
 
     /// From `cargo xtask fuzz`: a CID font whose /W range spans every u32 inserted billions of
