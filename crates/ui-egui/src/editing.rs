@@ -85,7 +85,8 @@ impl PdfCraftApp {
                 true
             }
             Err(e) => {
-                self.notify_fmt("{label} failed: {e}", &[("label", &crate::i18n::action_label(&label)), ("e", &e.to_string())]);
+                let message = if matches!(edit, Edit::MoveObjects { .. }) { crate::object_ui::move_error(&e) } else { e.to_string() };
+                self.notify_fmt("{label} failed: {e}", &[("label", &crate::i18n::action_label(&label)), ("e", &message)]);
                 false
             }
         }
@@ -349,6 +350,7 @@ impl PdfCraftApp {
             || v.content.blocked().is_some()
             || v.forms.focus.as_ref().is_some_and(|f| crate::forms_ui::draft_edit(f, &doc.form).is_some())
             || v.fill_text.as_ref().is_some_and(|t| !t.text.trim().is_empty())
+            || v.line_editor.as_ref().map_or_else(|| false, |ed| ed.has_unsaved_text())
     }
 
     /// Save the active document. Returns `true` if it was written.
@@ -403,7 +405,7 @@ impl PdfCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = (target, path);
+            let _ = path;
             if !self.flatten_fill_sign_for_save(id) {
                 return false;
             }
@@ -414,15 +416,31 @@ impl PdfCraftApp {
                     return false;
                 }
             };
-            match download(&name, &bytes) {
+            // An embedding page that asked for saves (`?host=parent`) gets the bytes; otherwise
+            // the browser downloads them.
+            let to_host = self.host_save.is_some();
+            let delivered = match &self.host_save {
+                Some(save) => save(&name, &bytes, matches!(target, SaveTarget::As)),
+                None => download(&name, &bytes),
+            };
+            match delivered {
                 Ok(()) => {
                     let _ = self.session.mark_saved(id, bytes, None);
-                    if let Some(doc) = self.session.get(id) {
-                        self.views[index].document_changed(&doc.info);
+                    if let Some(doc) = self.session.get(id)
+                        && let Some(view) = self.views.get_mut(index)
+                    {
+                        view.document_changed(&doc.info);
                     }
-                    self.notify_fmt("Downloaded {name}", &[("name", &name)]);
+                    // The host reports where the file went (and any failure) itself.
+                    if !to_host {
+                        self.notify_fmt("Downloaded {name}", &[("name", &name)]);
+                    }
                     after(self);
                     true
+                }
+                Err(e) if to_host => {
+                    self.notify_fmt("Couldn't save {name}: {e}", &[("name", &name), ("e", &e)]);
+                    false
                 }
                 Err(e) => {
                     self.notify_fmt("Couldn't download {name}: {e}", &[("name", &name), ("e", &e.to_string())]);
@@ -603,8 +621,14 @@ impl PdfCraftApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
+    /// Publish whether any document has unsaved work, for the browser's reload warning (#812).
+    pub(crate) fn sync_unsaved_flag(&self) {
+        self.unsaved_flag.store(self.first_dirty().is_some(), std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Intercept window close while documents have unsaved changes.
     pub(crate) fn guard_quit(&mut self, ctx: &egui::Context) {
+        self.sync_unsaved_flag();
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
@@ -630,6 +654,7 @@ fn comment_page(edit: &Edit) -> Option<usize> {
         | Edit::MoveAnnotation { page, .. }
         | Edit::ResizeAnnotation { page, .. }
         | Edit::StyleAnnotation { page, .. }
+        | Edit::FillAnnotation { page, .. }
         | Edit::SetAnnotationInfo { page, .. } => Some(*page),
         _ => None,
     }
@@ -970,6 +995,19 @@ mod revert_draft_tests {
                 assert_eq!(app.views[0].forms.focus.as_ref().unwrap().text, "Unsaved typing");
             }
         }
+    }
+
+    #[test]
+    fn unsaved_flag_follows_dirty_state() {
+        use std::sync::atomic::Ordering;
+        // `guard_quit` runs every frame, also on the web, where no close request ever arrives.
+        let ctx = egui::Context::default();
+        let mut app = app();
+        app.guard_quit(&ctx);
+        assert!(!app.unsaved_flag.load(Ordering::Relaxed));
+        assert!(app.apply_edit(Edit::SetFieldValue { name: "name".into(), value: FieldValue::Text("Changed".into()) }));
+        app.guard_quit(&ctx);
+        assert!(app.unsaved_flag.load(Ordering::Relaxed));
     }
 
     #[test]
