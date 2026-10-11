@@ -349,10 +349,15 @@ pub fn printers_parsed(queues: &str, available: Option<&str>) -> Vec<Printer> {
 
 /// The `powershell` command that runs a script. `-NoProfile` keeps a user's profile from
 /// writing banners into what is parsed, `-NonInteractive` from waiting for input.
+/// `CREATE_NO_WINDOW`: the release app has no console of its own, so without it Windows opens
+/// a console window for PowerShell over the app for as long as the script runs.
 #[cfg(windows)]
 fn powershell_command(script: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut c = std::process::Command::new("powershell");
     c.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    c.creation_flags(CREATE_NO_WINDOW);
     c
 }
 

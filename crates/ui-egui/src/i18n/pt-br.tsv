@@ -1459,6 +1459,8 @@
 	{file} is too large for a stamp (at most {n} MB)	{file} é muito grande para um carimbo (no máximo {n} MB)
 	Sent to {printer}	Enviado para {printer}
 	Sent to {printer}: {msg}	Enviado para {printer}: {msg}
+	Looking for printers…	Procurando impressoras…
+	Sending to {printer}…	Enviando para {printer}…
 	Choose a folder for the searchable files	Escolha uma pasta para os arquivos pesquisáveis
 	Files are combined in this order. Leave Pages empty to take every page.	Os arquivos são combinados nesta ordem. Deixe Páginas em branco para incluir todas as páginas.
 	Pages of {name} to combine, e.g. 1-3, 6	Páginas de {name} a combinar, ex.: 1-3, 6

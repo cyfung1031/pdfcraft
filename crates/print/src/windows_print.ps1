@@ -104,26 +104,62 @@ $settings.Duplex = switch ($env:PDFCRAFT_PRINT_DUPLEX) {
 }
 if ($env:PDFCRAFT_PRINT_GRAYSCALE -eq '1') { $printer.DefaultPageSettings.Color = $false }
 
+# The sheets are already laid out at their final size (CUPS gets `fit-to-page=false`), so each
+# one is printed at 100% on paper of its own size and orientation. Before every sheet the driver
+# is asked for that paper — the size closest to the sheet's, within an eighth of an inch, turned
+# either way — and turned landscape for a wide sheet; a driver without that paper keeps its own.
+$paperSizes = @($settings.PaperSizes)
+$script:sheets = 0
+$printer.add_QueryPageSettings({
+    param($sender, $e)
+    if ($script:sheets -ge $document.PageCount) { return }
+    $page = $document.GetPage($script:sheets)
+    try {
+        # Windows.Data.Pdf measures in 1/96 inch, PageSettings in 1/100 inch.
+        $w = $page.Size.Width / 96.0 * 100.0
+        $h = $page.Size.Height / 96.0 * 100.0
+    } finally {
+        $page.Dispose()
+    }
+    $long = [Math]::Max($w, $h)
+    $short = [Math]::Min($w, $h)
+    $best = $null
+    $bestOff = 12.5
+    foreach ($paper in $paperSizes) {
+        $off = [Math]::Abs([Math]::Max($paper.Width, $paper.Height) - $long) + [Math]::Abs([Math]::Min($paper.Width, $paper.Height) - $short)
+        if ($off -lt $bestOff) { $best = $paper; $bestOff = $off }
+    }
+    if ($best) { $e.PageSettings.PaperSize = $best }
+    $e.PageSettings.Landscape = ($w -gt $h)
+})
+
 # One sheet at a time: its page is rendered when the driver asks for it, so a long document
 # holds only one page's bitmap in memory.
-$script:sheets = 0
 $printer.add_PrintPage({
     param($sender, $e)
     if ($script:sheets -ge $document.PageCount) { $e.HasMorePages = $false; return }
     $page = $document.GetPage($script:sheets)
     $bitmap = $null
     try {
-        # The driver's page area is in hundredths of an inch; Render-Sheet fits the page into
-        # it, so this is the same scale, turned back into hundredths for the draw rectangle.
-        $area = $e.MarginBounds
-        $w = $page.Size.Width
-        $h = $page.Size.Height
-        $scale = [Math]::Min($area.Width / 100.0 * 96.0 / $w, $area.Height / 100.0 * 96.0 / $h)
+        # Hundredths of an inch throughout. The sheet is drawn at 100%, centred on the whole
+        # page — not its 1-inch default margins — and shrunk only when the paper is smaller than
+        # the sheet. The drawing origin is the printable area's corner, so the page's own corner
+        # is the hard margin back from it; what falls outside the printable area is clipped, as
+        # on CUPS.
+        $paper = $e.PageBounds
+        $w = $page.Size.Width / 96.0 * 100.0
+        $h = $page.Size.Height / 96.0 * 100.0
+        $scale = [Math]::Min(1.0, [Math]::Min($paper.Width / $w, $paper.Height / $h))
+        $drawW = $w * $scale
+        $drawH = $h * $scale
+        # The printer's resolution, at most 600 dpi and at most ~64 megapixels a sheet, so a
+        # poster-sized sheet can't run the machine out of memory.
         $dpi = [Math]::Min(600, [Math]::Max(72, $e.Graphics.DpiX))
-        $bitmap = Render-Sheet $page $area.Width $area.Height $dpi
-        $drawW = $w * $scale / 96.0 * 100.0
-        $drawH = $h * $scale / 96.0 * 100.0
-        $box = [System.Drawing.RectangleF]::new($area.Left + ($area.Width - $drawW) / 2.0, $area.Top + ($area.Height - $drawH) / 2.0, $drawW, $drawH)
+        $dpi = [Math]::Max(36, [Math]::Min($dpi, [Math]::Sqrt(64e6 / ($drawW / 100.0 * $drawH / 100.0))))
+        $bitmap = Render-Sheet $page $drawW $drawH $dpi
+        $left = ($paper.Width - $drawW) / 2.0 - $e.PageSettings.HardMarginX
+        $top = ($paper.Height - $drawH) / 2.0 - $e.PageSettings.HardMarginY
+        $box = [System.Drawing.RectangleF]::new($left, $top, $drawW, $drawH)
         $e.Graphics.DrawImage($bitmap, $box)
     } finally {
         if ($bitmap) { $bitmap.Dispose() }

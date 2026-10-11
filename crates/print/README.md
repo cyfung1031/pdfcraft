@@ -39,7 +39,9 @@ piped to `lp` on stdin and never written to a temp file, where another local use
 swap it. On Windows the printers come from `Win32_Printer` and jobs are rendered by the in-box
 `Windows.Data.Pdf` and spooled by `System.Drawing.Printing` with the driver's own settings (both
 through `powershell`, so no Win32 API is called here); that job file exists for the seconds the
-spooler reads it, under a fresh unpredictable name. Other platforms report that printing to a
+spooler reads it, under a fresh unpredictable name. Each sheet prints at 100% on the driver's
+paper closest to its size, turned landscape when it is wide, and is rasterised at the printer's
+resolution (up to 600 dpi), not sent as vectors. Other platforms report that printing to a
 printer isn't available yet; the print-ready PDF can always be saved.
 
 Not yet: the web spooler, print as image, poster labels, PostScript output, colour conversion for

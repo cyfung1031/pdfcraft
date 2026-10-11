@@ -1550,6 +1550,8 @@ action wizard	Start	ప్రారంభించు
 	{file} is too large for a stamp (at most {n} MB)	స్టాంప్‌కు {file} చాలా పెద్దది (గరిష్ఠంగా {n} MB)
 	Sent to {printer}	{printer}కు పంపబడింది
 	Sent to {printer}: {msg}	{printer}కు పంపబడింది: {msg}
+	Looking for printers…	ప్రింటర్ల కోసం వెతుకుతోంది…
+	Sending to {printer}…	{printer}కు పంపుతోంది…
 	Choose a folder for the searchable files	వెతకగలిగే ఫైల్‌ల కోసం ఒక ఫోల్డర్‌ను ఎంచుకోండి
 	Files are combined in this order. Leave Pages empty to take every page.	ఫైల్‌లు ఈ క్రమంలో కలపబడతాయి. అన్ని పేజీలను తీసుకోవడానికి పేజీలు ఫీల్డ్‌ను ఖాళీగా వదలండి.
 	Pages of {name} to combine, e.g. 1-3, 6	కలపాల్సిన {name} పేజీలు, ఉదా. 1-3, 6

@@ -1544,6 +1544,8 @@
 	{file} is too large for a stamp (at most {n} MB)	{file} túl nagy bélyegzőnek (legfeljebb {n} MB)
 	Sent to {printer}	Elküldve ide: {printer}
 	Sent to {printer}: {msg}	Elküldve ide: {printer}: {msg}
+	Looking for printers…	Nyomtatók keresése…
+	Sending to {printer}…	Küldés ide: {printer}…
 	Choose a folder for the searchable files	Válassz mappát a kereshető fájloknak
 	Files are combined in this order. Leave Pages empty to take every page.	A fájlok ebben a sorrendben egyesülnek. Hagyd üresen az Oldalak mezőt, ha minden oldalt kéred.
 	Pages of {name} to combine, e.g. 1-3, 6	{name} egyesítendő oldalai, pl. 1-3, 6

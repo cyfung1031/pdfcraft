@@ -190,3 +190,56 @@ fn print_dialog_shows_the_printer_driver_options() {
     h.state_mut().print_draft.printer = Some("Other_Queue".into());
     assert!(h.state().print_draft.job("form.pdf").options.is_empty());
 }
+
+/// The desktop app lists printers in the background (PowerShell on Windows takes a second or
+/// more): the dialog opens at once, then preselects the default when the list arrives — unless
+/// the user has already picked a printer.
+#[test]
+fn printers_listed_in_the_background_preselect_the_default_unless_one_was_picked() {
+    use pdfcraft_engine::print::spool::Printer;
+    use std::sync::{Arc, Mutex};
+    let mut h = harness();
+    // The source waits until the test lets it answer, so the dialog is seen while it looks.
+    let gate = Arc::new(Mutex::new(()));
+    let hold = gate.lock().unwrap();
+    let wait = gate.clone();
+    h.state_mut().printer_source = Some(Arc::new(move || {
+        let _open = wait.lock();
+        vec![Printer { name: "Office".into(), default: false }, Printer { name: "Front Desk".into(), default: true }]
+    }));
+    assert!(h.state_mut().execute("print.dialog"));
+    h.run_steps(2);
+    assert_eq!(h.state().dialog, Some(Dialog::Print), "the dialog doesn't wait for the printers");
+    assert!(h.state().print_draft.printers_loading);
+    assert_eq!(h.state().print_draft.printer, None);
+    drop(hold);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().print_draft.printers_loading && std::time::Instant::now() < deadline {
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!h.state().print_draft.printers_loading);
+    assert_eq!(h.state().print_draft.printers.len(), 2);
+    assert_eq!(h.state().print_draft.printer.as_deref(), Some("Front Desk"));
+
+    // Opened again: last time's list shows at once; a choice made before the fresh list
+    // arrives is kept.
+    h.state_mut().dialog = None;
+    let hold = gate.lock().unwrap();
+    assert!(h.state_mut().execute("print.dialog"));
+    h.run_steps(2);
+    assert_eq!(h.state().print_draft.printers.len(), 2, "the last list shows while looking");
+    {
+        let d = &mut h.state_mut().print_draft;
+        d.printer = None;
+        d.printer_picked = true;
+    }
+    drop(hold);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().print_draft.printers_loading && std::time::Instant::now() < deadline {
+        h.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!h.state().print_draft.printers_loading);
+    assert_eq!(h.state().print_draft.printer, None, "Save as PDF, as picked");
+}
