@@ -62,6 +62,20 @@ fn reopen(doc: &Document) -> Document {
     Document::open(Arc::new(bytes)).expect("reopens")
 }
 
+fn legacy_two_call_enumeration(doc: &Document) -> (Vec<Field>, usize) {
+    (enumerate(doc).0, enumerate(doc).1)
+}
+
+fn assert_combined_matches_legacy(doc: &Document, adopted: usize) {
+    let (old_fields, old_adopted) = legacy_two_call_enumeration(doc);
+    let combined = fields_with_adopted(doc);
+    assert_eq!(combined.items, old_fields);
+    assert_eq!(combined.adopted_page_fields, old_adopted);
+    assert_eq!(combined.adopted_page_fields, adopted);
+    assert_eq!(fields(doc), old_fields, "the compatibility wrapper keeps the old fields");
+    assert_eq!(adopted_page_fields(doc), old_adopted, "the compatibility wrapper keeps the old count");
+}
+
 fn field<'a>(all: &'a [Field], name: &str) -> &'a Field {
     all.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no field {name}"))
 }
@@ -76,6 +90,7 @@ fn ap(doc: &Document, w: &Widget) -> String {
 #[test]
 fn the_field_tree_is_read_with_inheritance() {
     let doc = fixture();
+    assert_combined_matches_legacy(&doc, 0);
     let all = fields(&doc);
     let names: Vec<&str> = all.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["name", "notes", "zip", "pin", "id", "address.city", "agree", "size", "country", "toppings", "go", "bare"]);
@@ -140,6 +155,7 @@ fn fields_listed_only_on_the_pages_are_adopted() {
         "<< /Type /Annot /Subtype /Widget /Rect [400 700 415 715] /P 3 0 R >>".into(), // 15 no /FT, /T or /Parent: not a field
     ];
     let mut doc = document(&objs);
+    assert_combined_matches_legacy(&doc, 3);
     let all = fields(&doc);
     let names: Vec<&str> = all.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["listed", "alpha", "beta", "pair"]);
@@ -157,6 +173,7 @@ fn fields_listed_only_on_the_pages_are_adopted() {
     let mut objs = objs;
     objs[3] = "<< /DA (/Helv 0 Tf 0 g) /DR << /Font << /Helv 6 0 R >> >> >>".into();
     let doc = document(&objs);
+    assert_combined_matches_legacy(&doc, 4);
     let all = fields(&doc);
     let names: Vec<&str> = all.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["listed", "alpha", "beta", "pair"]);
@@ -394,8 +411,42 @@ fn reset_restores_defaults() {
 #[test]
 fn documents_without_forms_say_so() {
     let mut doc = Document::new_empty();
+    assert_combined_matches_legacy(&doc, 0);
     assert!(fields(&doc).is_empty());
     assert_eq!(set_value(&mut doc, "x", &FieldValue::Text("y".into())), Err(FormError::NoForm));
+}
+
+#[test]
+fn combined_enumeration_keeps_page_order_across_pages() {
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [6 0 R] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [7 0 R] >>".into(),
+        "<< /Fields [6 0 R] >>".into(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (listed) /Rect [50 700 250 720] /P 3 0 R >>".into(),
+        "<< /Type /Annot /Subtype /Widget /FT /Tx /T (adopted) /Rect [50 700 250 720] /P 4 0 R >>".into(),
+    ];
+    let doc = document(&objs);
+    assert_combined_matches_legacy(&doc, 1);
+
+    let combined = fields_with_adopted(&doc);
+    assert_eq!(combined.items.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["listed", "adopted"]);
+    assert_eq!(combined.items.iter().map(|f| f.widgets[0].page).collect::<Vec<_>>(), [Some(0), Some(1)]);
+}
+
+#[test]
+fn combined_enumeration_keeps_leniency_for_dangling_field_entries() {
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 600 800] >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Annots [] >>".into(),
+        "<< /Fields [99 0 R null 5 0 R] >>".into(),
+        "<< /FT /Tx /T (valid) >>".into(),
+    ];
+    let doc = document(&objs);
+    assert_combined_matches_legacy(&doc, 0);
+    assert_eq!(fields_with_adopted(&doc).items.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["valid"]);
 }
 
 #[test]
@@ -905,6 +956,7 @@ fn field_actions_round_trip_on_every_trigger() {
     assert_eq!(field_actions(&doc, &name).unwrap(), [(Trigger::MouseExit, FieldAction::Named("NextPage".into()))]);
     // The Mouse Up script is what the button runs.
     set_field_actions(&mut doc, &name, &[(Trigger::MouseUp, FieldAction::JavaScript("this.print();".into()))]).unwrap();
+    assert_combined_matches_legacy(&doc, 0);
     assert_eq!(fields(&doc).iter().find(|f| f.name == "go").unwrap().button, Some(af::ButtonAction::Named("Print".into())));
 }
 

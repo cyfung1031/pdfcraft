@@ -2380,12 +2380,14 @@ impl Session {
         };
         let display = display_bytes(editor.as_ref(), &bytes);
         let renderer = RenderPool::new(display.clone(), render_threads(), config.clone());
-        let mut form = editor.as_ref().map(|e| pdfcraft_forms::fields(&e.cos)).unwrap_or_default();
-        let mut adopted = 0;
-        if let Some(e) = editor.as_ref() {
-            xfa::mark_script_buttons(&e.cos, &mut form);
-            adopted = pdfcraft_forms::adopted_page_fields(&e.cos);
-        }
+        let (form, adopted) = editor
+            .as_ref()
+            .map(|e| {
+                let mut fields = pdfcraft_forms::fields_with_adopted(&e.cos);
+                xfa::mark_script_buttons(&e.cos, &mut fields.items);
+                (fields.items, fields.adopted_page_fields)
+            })
+            .unwrap_or_default();
         // Fields the file lists only as page widgets are adopted leniently; the file says so.
         if adopted > 0
             && let Some(e) = &mut editor

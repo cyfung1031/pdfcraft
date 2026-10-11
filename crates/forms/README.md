@@ -7,6 +7,9 @@ Interactive forms (AcroForm, ISO 32000-2 §12.7). Layer L3; depends on `pdfcraft
 
 ```rust
 let all: Vec<Field> = fields(&doc);                         // terminal fields with widgets, options, flags, /DA
+let snapshot = fields_with_adopted(&doc);                     // fields and page-only adoption count in one pass
+let all = snapshot.items;
+let adopted = snapshot.adopted_page_fields;
 set_value(&mut doc, "name", &FieldValue::Text("Ada".into()))?;
 set_value(&mut doc, "agree", &FieldValue::Check(true))?;
 set_value(&mut doc, "size", &FieldValue::Radio(Some("L".into())))?;
