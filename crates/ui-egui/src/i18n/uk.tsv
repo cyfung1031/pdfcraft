@@ -2207,3 +2207,11 @@ key	Space	Пробіл
 	Collapse all	Згорнути всі
 	Remove page	Видалити сторінку
 	Remove {n} pages	Видалити сторінки: {n}
+
+# Shared panel docking
+	Reset panel layout	Скинути розташування панелей
+	Float panel	Відкріпити панель
+	Move to group	Перемістити до групи
+	Panels	Панелі
+	Resize panels	Змінити розмір панелей
+	Resize panel window	Змінити розмір вікна панелі

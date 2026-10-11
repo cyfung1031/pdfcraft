@@ -2114,3 +2114,13 @@ key	Space	స్పేస్
 	Collapse all	అన్నీ ముడుచు
 	Remove page	పేజీని తీసివేయి
 	Remove {n} pages	{n} పేజీలను తీసివేయి
+
+# Shared panel docking
+	Reset panel layout	ప్యానెల్ అమరికను రీసెట్ చేయి
+	Float panel	ప్యానెల్‌ను తేలియాడేలా చేయి
+	Move to group	సమూహానికి తరలించు
+	Panels	ప్యానెల్‌లు
+	Resize panels	ప్యానెల్‌ల పరిమాణం మార్చు
+	Resize panel window	ప్యానెల్ విండో పరిమాణం మార్చు
+	Tools	సాధనాలు
+	Inspector	పరిశీలకుడు

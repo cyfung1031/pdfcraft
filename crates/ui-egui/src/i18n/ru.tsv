@@ -2097,3 +2097,13 @@ key	Space	Пробел
 	Collapse all	Свернуть все
 	Remove page	Удалить страницу
 	Remove {n} pages	Удалить страницы: {n}
+
+# Shared panel docking
+	Reset panel layout	Сбросить расположение панелей
+	Float panel	Сделать панель плавающей
+	Move to group	Переместить в группу
+	Panels	Панели
+	Resize panels	Изменить размеры панелей
+	Resize panel window	Изменить размер окна панели
+	Tools	Инструменты
+	Inspector	Инспектор

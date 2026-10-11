@@ -2100,3 +2100,13 @@ key	Space	Espacio
 	Collapse all	Contraer todo
 	Remove page	Quitar página
 	Remove {n} pages	Quitar {n} páginas
+
+# Shared panel docking
+	Reset panel layout	Restablecer disposición de paneles
+	Float panel	Hacer flotante el panel
+	Move to group	Mover al grupo
+	Panels	Paneles
+	Resize panels	Cambiar tamaño de paneles
+	Resize panel window	Cambiar tamaño de la ventana del panel
+	Tools	Herramientas
+	Inspector	Inspector

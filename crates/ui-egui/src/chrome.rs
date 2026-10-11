@@ -78,7 +78,19 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                                 let (name, dirty) = (doc.display_name(), doc.dirty);
                                 // A tab showing the document's title names its file on hover.
                                 let file = (name != doc.name).then_some(doc.name.as_str());
-                                let response = tab(ui, &t, "file-text", &name, file, dirty, app.active == Some(i), &mut close, i, cap);
+                                let response = tab(
+                                    ui,
+                                    ui.id().with(("document-tab", app.views[i].id)),
+                                    &t,
+                                    "file-text",
+                                    &name,
+                                    file,
+                                    dirty,
+                                    app.active == Some(i),
+                                    &mut close,
+                                    i,
+                                    cap,
+                                );
                                 if changed && app.active == Some(i) && !app.combine_showing() {
                                     response.scroll_to_me(Some(Align::Center));
                                 }
@@ -92,8 +104,19 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                             if app.combine_tab.open {
                                 // After the document tabs; its index can't clash with theirs.
                                 let mut close = None;
-                                let response =
-                                    tab(ui, &t, "files", tl!("Combine files"), None, false, app.combine_showing(), &mut close, usize::MAX, cap);
+                                let response = tab(
+                                    ui,
+                                    ui.id().with("combine-tab"),
+                                    &t,
+                                    "files",
+                                    tl!("Combine files"),
+                                    None,
+                                    false,
+                                    app.combine_showing(),
+                                    &mut close,
+                                    usize::MAX,
+                                    cap,
+                                );
                                 if changed && app.combine_showing() {
                                     response.scroll_to_me(Some(Align::Center));
                                 }
@@ -212,6 +235,7 @@ fn tab_cap(natural: &[f32], budget: f32, gap: f32, min: f32) -> Option<f32> {
 #[allow(clippy::too_many_arguments)]
 fn tab(
     ui: &mut egui::Ui,
+    id: egui::Id,
     t: &Tokens,
     icon: &str,
     name: &str,
@@ -235,21 +259,22 @@ fn tab(
     let label = crate::bidi::visual(&label).into_owned();
     let text_w = ui.fonts_mut(|f| f.layout_no_wrap(label.clone(), font.clone(), t.text).size().x);
     let width = cap.map_or(text_w + TAB_CHROME, |cap| (text_w + TAB_CHROME).min(cap));
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 30.0), Sense::hover());
     let a11y = if dirty { format!("{name} (edited)") } else { name.to_string() };
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, &a11y));
-    let bg = if active {
-        t.chrome
-    } else if resp.hovered() {
-        t.hover
-    } else {
-        Color32::TRANSPARENT
-    };
-    ui.painter().rect_filled(rect, CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 }, bg);
-    icons::paint(ui, Rect::from_min_size(rect.min + vec2(6.0, 7.0), vec2(16.0, 16.0)), icon, 15.0, if active { t.accent } else { t.text_muted });
-    ui.painter().text(rect.min + vec2(28.0, rect.height() / 2.0), Align2::LEFT_CENTER, label, font, if active { t.text } else { t.text_muted });
+    let resp = craft_ui::tabs::Tab::new(id, &a11y, active).focus_stroke(Stroke::new(1.0, t.accent)).show_at(ui, rect, |ui, resp| {
+        let bg = if active {
+            t.chrome
+        } else if resp.hovered() {
+            t.hover
+        } else {
+            Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 }, bg);
+        icons::paint(ui, Rect::from_min_size(rect.min + vec2(6.0, 7.0), vec2(16.0, 16.0)), icon, 15.0, if active { t.accent } else { t.text_muted });
+        ui.painter().text(rect.min + vec2(28.0, rect.height() / 2.0), Align2::LEFT_CENTER, label, font, if active { t.text } else { t.text_muted });
+    });
     let x_rect = Rect::from_center_size(rect.right_center() - vec2(16.0, 0.0), vec2(20.0, 20.0));
-    let x = ui.interact(x_rect, ui.id().with(("tabclose", index)), Sense::click());
+    let x = ui.interact(x_rect, id.with("close"), Sense::click());
     if x.hovered() {
         ui.painter().rect_filled(x_rect, CornerRadius::same(4), t.pressed);
     }
@@ -419,7 +444,7 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
             let mut rail_button = |ui: &mut egui::Ui, panel: RightPanel, icon: &str, tip: &str, has: bool| {
-                let selected = app.right == Some(panel);
+                let selected = app.right == Some(panel) && (app.mode == Mode::Read || app.docking.exposed(crate::docking::Panel::Inspector));
                 let r = icons::button(ui, icon, 34.0, selected, tl!(tip));
                 if has && !selected {
                     let c = r.rect.right_top() + vec2(-8.0, 8.0);

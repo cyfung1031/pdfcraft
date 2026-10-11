@@ -2206,3 +2206,11 @@ key	Space	مسافة
 	Collapse all	طي الكل
 	Remove page	إزالة الصفحة
 	Remove {n} pages	إزالة {n} صفحات
+
+# Shared panel docking
+	Reset panel layout	إعادة تعيين تخطيط اللوحات
+	Float panel	تعويم اللوحة
+	Move to group	نقل إلى مجموعة
+	Panels	اللوحات
+	Resize panels	تغيير حجم اللوحات
+	Resize panel window	تغيير حجم نافذة اللوحة

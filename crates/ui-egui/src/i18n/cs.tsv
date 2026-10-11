@@ -172,3 +172,13 @@ key	Esc	Esc
 key	Home	Home
 key	End	End
 key	Space	Mezerník
+
+# Shared panel docking
+	Reset panel layout	Obnovit rozložení panelů
+	Float panel	Uvolnit panel
+	Move to group	Přesunout do skupiny
+	Panels	Panely
+	Resize panels	Změnit velikost panelů
+	Resize panel window	Změnit velikost okna panelu
+	Tools	Nástroje
+	Inspector	Inspektor

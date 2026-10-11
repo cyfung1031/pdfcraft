@@ -2146,3 +2146,13 @@ key	Space	Интервал
 	Collapse all	Свий всички
 	Remove page	Премахни страницата
 	Remove {n} pages	Премахни {n} страници
+
+# Shared panel docking
+	Reset panel layout	Възстанови оформлението на панелите
+	Float panel	Откачи панела
+	Move to group	Премести в група
+	Panels	Панели
+	Resize panels	Преоразмери панелите
+	Resize panel window	Преоразмери прозореца на панела
+	Tools	Инструменти
+	Inspector	Инспектор

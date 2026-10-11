@@ -2184,3 +2184,13 @@ key	Space	スペース
 	Collapse all	すべて折りたたむ
 	Remove page	ページを削除
 	Remove {n} pages	{n} ページを削除
+
+# Shared panel docking
+	Reset panel layout	パネル配置をリセット
+	Float panel	パネルをフロート化
+	Move to group	グループに移動
+	Panels	パネル
+	Resize panels	パネルのサイズを変更
+	Resize panel window	パネルウィンドウのサイズを変更
+	Tools	ツール
+	Inspector	インスペクター

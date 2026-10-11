@@ -314,7 +314,24 @@ pdfcraft-cli ui --control ~/.pdfcraft-control.json key key=K modifiers='["comman
 pdfcraft-cli ui --control ~/.pdfcraft-control.json command id=comment.square   # pick a tool, then draw:
 pdfcraft-cli ui --control ~/.pdfcraft-control.json drag from='[400,300]' to='[600,420]'
 pdfcraft-cli ui --control ~/.pdfcraft-control.json screenshot --out window.png
+pdfcraft-cli ui --control ~/.pdfcraft-control.json resize width=1200 height=800
+pdfcraft-cli ui --control ~/.pdfcraft-control.json focus label="Read"
+pdfcraft-cli ui --control ~/.pdfcraft-control.json inspect focused=true
+pdfcraft-cli ui --control ~/.pdfcraft-control.json quit
 ```
+
+`ui.dock` arranges the `tools` and `inspector` panels; `canvas` is the protected document view.
+Each per-panel request requires a `panel` ID and an `operation`: `open`, `close`,
+`activate`, `float` with `rect: [x, y, width, height]`, or `move` with `target` and
+`zone: center|left|right|top|bottom`. For example,
+`{"operation":"float","panel":"tools","rect":[100,100,320,440]}` floats Tools.
+`ui.dock.reset` restores the default
+arrangement. The control channel accepts these methods directly; `ui.command` also accepts
+`{"id":"ui.dock","params":{...}}`. Saved preferences retain groups, active tabs, visibility
+and floating geometry. Invalid requests return an error without changing the document or layout.
+
+
+`resize` requests a native inner-window size in logical points (each dimension must be between 320 and 8192); the window manager may constrain it. `state` reports the observed `window.width`, `window.height` and `window.pixels_per_point`. `focus` accepts exactly one widget `id` or unique enabled, focusable `label`; subsequent `key` requests traverse or activate the actual widgets. `inspect` includes focusability and accepts a `focused` filter. `quit` takes no parameters: clean documents exit normally, while unsaved edits or typing open the existing Save/Don't save/Cancel prompt and return `quitting: false, needs_confirmation: true`. It never silently discards work. Window resizing and application quit are native-only.
 
 ---
 
@@ -536,3 +553,14 @@ Forks and modified versions must remove them.
   <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
   <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
 </p>
+
+Tools and Inspector panels can be dragged into tab groups, split beside the PDF, or floated within the app window. Read and full-screen modes keep their existing focused document view. Drag a panel header to a target edge or another header. Its context menu offers Float panel, Move to group, and Close panel. Existing panel toggles reopen panels at their saved location; Reset Panel Layout restores the app layout. Floating panels remain inside the current app window.
+
+Advanced `ui.dock` operations use the same validated transaction as pointer gestures:
+`moveFloating` updates `rect`, `resizeSplit` accepts a boolean child `path` and
+`size` (`{"Ratio":0.5}`, `{"FixedFirst":280}`, or `{"FixedSecond":280}`),
+`setStackOpen` takes `open`, and `resizeStack` takes a point `height` or null.
+A center `move` can include `before` (panel ID or null to append) for tab order.
+The equivalent `{"action": ...}` form accepts a serialized shared docking action;
+this is also the form emitted by the renderer. Protected-canvas and app-specific panel
+rules apply equally to both forms.

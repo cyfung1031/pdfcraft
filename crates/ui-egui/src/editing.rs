@@ -602,6 +602,20 @@ impl PdfCraftApp {
         }
     }
 
+    /// Request a normal application exit, preserving every unsaved document until answered.
+    /// Returns false while the existing save/discard/cancel prompt needs a decision.
+    pub(crate) fn request_quit(&mut self, ctx: &egui::Context) -> bool {
+        if self.first_dirty().is_some() {
+            self.close_request = Some(CloseRequest::Quit);
+            ctx.request_repaint();
+            false
+        } else {
+            self.shutdown_recovery();
+            self.quit(ctx);
+            true
+        }
+    }
+
     fn quit(&mut self, ctx: &egui::Context) {
         self.allow_quit = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -948,6 +962,39 @@ mod revert_draft_tests {
         let form = app.session.get(app.views[index].id).unwrap().form.clone();
         crate::forms_ui::commit(&mut app.views[index], &form);
         assert!(app.views[index].forms.committed.is_some() && app.views[index].pending_edit.is_some());
+    }
+
+    #[test]
+    fn control_quit_prompts_for_uncommitted_typing_and_cancel_retains_it() {
+        for queued in [false, true] {
+            let mut app = app();
+            let id = app.views[0].id;
+            app.open_bytes("other.pdf", None, include_bytes!("../tests/data/form.pdf").to_vec()).unwrap();
+            if queued {
+                queue_draft(&mut app, 0, "Unsaved typing");
+            } else {
+                app.views[0].forms.focus = Some(focus("Unsaved typing"));
+            }
+            assert!(!app.session.get(id).unwrap().dirty);
+            assert_eq!(app.active, Some(1));
+            let ctx = egui::Context::default();
+            assert!(!app.request_quit(&ctx));
+            assert_eq!(app.close_request, Some(CloseRequest::Quit));
+            assert!(!app.allow_quit);
+            app.resolve_close(&ctx, None);
+            assert!(app.close_request.is_none());
+            assert_eq!(app.views.len(), 2);
+            assert!(app.has_unsaved_work(0));
+            assert_eq!(app.views[0].id, id);
+            assert!(!app.session.get(id).unwrap().dirty);
+            if queued {
+                assert!(
+                    matches!(&app.views[0].pending_edit, Some(Edit::SetFieldValue { value: FieldValue::Text(text), .. }) if text == "Unsaved typing")
+                );
+            } else {
+                assert_eq!(app.views[0].forms.focus.as_ref().unwrap().text, "Unsaved typing");
+            }
+        }
     }
 
     #[test]

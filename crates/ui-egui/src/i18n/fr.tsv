@@ -2184,3 +2184,13 @@ key	Space	Espace
 	Collapse all	Tout réduire
 	Remove page	Retirer la page
 	Remove {n} pages	Retirer {n} pages
+
+# Shared panel docking
+	Reset panel layout	Réinitialiser la disposition des panneaux
+	Float panel	Détacher le panneau
+	Move to group	Déplacer vers un groupe
+	Panels	Panneaux
+	Resize panels	Redimensionner les panneaux
+	Resize panel window	Redimensionner la fenêtre du panneau
+	Tools	Outils
+	Inspector	Inspecteur

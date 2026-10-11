@@ -2182,3 +2182,13 @@ key	Space	Szóköz
 	Collapse all	Összes összecsukása
 	Remove page	Oldal eltávolítása
 	Remove {n} pages	{n} oldal eltávolítása
+
+# Shared panel docking
+	Reset panel layout	Panelelrendezés visszaállítása
+	Float panel	Panel lebegtetése
+	Move to group	Áthelyezés csoportba
+	Panels	Panelek
+	Resize panels	Panelek átméretezése
+	Resize panel window	Panelablak átméretezése
+	Tools	Eszközök
+	Inspector	Tulajdonságvizsgáló

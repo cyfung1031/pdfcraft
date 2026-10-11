@@ -2148,3 +2148,13 @@ key	Space	空格
 	Collapse all	全部折叠
 	Remove page	删除页面
 	Remove {n} pages	删除 {n} 页
+
+# Shared panel docking
+	Reset panel layout	重置面板布局
+	Float panel	浮动面板
+	Move to group	移到组中
+	Panels	面板
+	Resize panels	调整面板大小
+	Resize panel window	调整面板窗口大小
+	Tools	工具
+	Inspector	检查器

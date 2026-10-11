@@ -2184,3 +2184,13 @@ key	Space	Leertaste
 	Collapse all	Alle einklappen
 	Remove page	Seite entfernen
 	Remove {n} pages	{n} Seiten entfernen
+
+# Shared panel docking
+	Reset panel layout	Bereichsanordnung zurücksetzen
+	Float panel	Bereich frei platzieren
+	Move to group	In Gruppe verschieben
+	Panels	Bereiche
+	Resize panels	Bereichsgrößen ändern
+	Resize panel window	Größe des Bereichsfensters ändern
+	Tools	Werkzeuge
+	Inspector	Inspektor

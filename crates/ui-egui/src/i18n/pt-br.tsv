@@ -2185,3 +2185,13 @@ key	Space	Espaço
 	Collapse all	Recolher tudo
 	Remove page	Remover página
 	Remove {n} pages	Remover {n} páginas
+
+# Shared panel docking
+	Reset panel layout	Redefinir disposição dos painéis
+	Float panel	Tornar painel flutuante
+	Move to group	Mover para grupo
+	Panels	Painéis
+	Resize panels	Redimensionar painéis
+	Resize panel window	Redimensionar janela do painel
+	Tools	Ferramentas
+	Inspector	Inspetor

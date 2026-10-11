@@ -142,6 +142,11 @@ impl PdfCraftApp {
         let active = self.active;
         let targets = active.map(|i| self.views[i].target_pages()).unwrap_or_default();
         match id {
+            "ui.dock.reset" => {
+                if let Err(error) = crate::docking::command(self, true, &serde_json::Value::Null) {
+                    self.notify(error);
+                }
+            }
             "file.open" => self.open_dialog(),
             "file.open_recent" => match self.recent.first().map(|r| r.path.clone()) {
                 // The palette runs commands without a submenu: open the most recent file.
@@ -253,7 +258,7 @@ impl PdfCraftApp {
                 self.quick_tool = crate::QuickTool::Comment(tool);
                 // Acrobat opens the Comments panel with the commenting tools, unless the user closed it.
                 if self.right.is_none() && !self.comments_panel_closed {
-                    self.right = Some(RightPanel::Comments);
+                    self.choose_right_panel(Some(RightPanel::Comments));
                 }
                 // A text selection made before picking a markup tool is marked right away.
                 if let (Some(kind), Some(i)) = (tool.markup(), active)
@@ -269,7 +274,7 @@ impl PdfCraftApp {
                     }
                 }
             }
-            "form.fields" => self.right = Some(RightPanel::Fields),
+            "form.fields" => self.choose_right_panel(Some(RightPanel::Fields)),
             "comment.flatten" => {
                 self.apply_edit(Edit::Flatten { comments: true, fields: false });
             }
@@ -359,7 +364,7 @@ impl PdfCraftApp {
             "edit.edit_text" => {
                 self.quick_tool = crate::QuickTool::EditText;
                 self.left = crate::LeftPanel::Tool("edit");
-                self.left_open = true;
+                self.reveal_tools();
                 self.notify_tr("Click text or an image to edit it");
             }
             "edit.advanced_search" => {
@@ -367,7 +372,7 @@ impl PdfCraftApp {
                     let f = self.views[i].find.get_or_insert_with(Default::default);
                     f.in_panel = true;
                     f.focus = true;
-                    self.right = Some(crate::RightPanel::Search);
+                    self.choose_right_panel(Some(crate::RightPanel::Search));
                 }
             }
             "a11y.report" => self.show_accessibility_report(),
@@ -377,7 +382,7 @@ impl PdfCraftApp {
             "edit.text" => {
                 self.quick_tool = crate::QuickTool::AddText;
                 self.left = crate::LeftPanel::Tool("edit");
-                self.left_open = true;
+                self.reveal_tools();
             }
             "edit.image" => self.add_image_dialog(),
             "edit.link" => {
@@ -391,7 +396,7 @@ impl PdfCraftApp {
             "redact.mark" => {
                 self.quick_tool = crate::QuickTool::Redact;
                 self.left = crate::LeftPanel::Tool("redact");
-                self.left_open = true;
+                self.reveal_tools();
                 // A text selection made first is marked right away.
                 if let Some(i) = active
                     && let Some(doc) = self.session.get(self.views[i].id)
@@ -442,7 +447,7 @@ impl PdfCraftApp {
             "comment.import" | "form.import_data" => self.import_data_dialog(),
             "comment.stamp" => {
                 self.left = crate::LeftPanel::Tool("stamp");
-                self.left_open = true;
+                self.reveal_tools();
             }
             "comment.export" => self.export_data_dialog(true, false),
             "comment.summarize" => self.dialog = Some(Dialog::SummarizeComments),
@@ -458,9 +463,9 @@ impl PdfCraftApp {
             "sign.validate" => {
                 let certs = self.session.trusted_certificates().to_vec();
                 self.session.set_trusted_certificates(certs);
-                self.right = Some(RightPanel::Signatures);
+                self.choose_right_panel(Some(RightPanel::Signatures));
             }
-            "sign.panel" => self.right = Some(RightPanel::Signatures),
+            "sign.panel" => self.choose_right_panel(Some(RightPanel::Signatures)),
             "optimize.advanced" => self.dialog = Some(Dialog::Optimize),
             "view.fit_visible" => {
                 if let Some(i) = self.active
@@ -494,8 +499,8 @@ impl PdfCraftApp {
             "export.rtf" => self.export_office_dialog(pdfcraft_engine::compare::OfficeFormat::Rtf),
             "form.prepare" => {
                 self.left = crate::LeftPanel::Tool("form");
-                self.left_open = true;
-                self.right = Some(RightPanel::Fields);
+                self.reveal_tools();
+                self.choose_right_panel(Some(RightPanel::Fields));
                 // Like Acrobat, a document without fields gets them detected on the way in.
                 if let Some((_, id)) = self.active_ids()
                     && self.session.get(id).is_some_and(|d| d.form.is_empty() && d.editable())
@@ -527,7 +532,7 @@ impl PdfCraftApp {
                 let Some(tool) = crate::prepare::FieldTool::from_command(field) else { return false };
                 self.quick_tool = crate::QuickTool::Field(tool);
                 self.left = crate::LeftPanel::Tool("form");
-                self.left_open = true;
+                self.reveal_tools();
                 if let Some(i) = active {
                     self.views[i].forms.focus = None;
                 }
@@ -594,7 +599,9 @@ impl PdfCraftApp {
     /// Run the registered keyboard shortcuts (more specific combinations first).
     pub(crate) fn registry_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, KeyboardShortcut, Modifiers};
-        let typing = ctx.egui_wants_keyboard_input();
+        // Buttons also own keyboard focus for Tab/Enter activation, but they must not
+        // suppress document shortcuts. Text editors retain their own undo/redo handling.
+        let typing = ctx.text_edit_focused();
         // A form field's editor is open on the page: its text isn't in the document until
         // committed. (Not egui's keyboard focus: an Escape in this frame has already cleared that,
         // while the field has yet to see the Escape and discard its draft.)

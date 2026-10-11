@@ -1,7 +1,7 @@
 //! Headless UI tests (egui_kittest + AccessKit). They drive the real app shell without a window.
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use pdfcraft_ui_egui::PdfCraftApp;
 
 /// A tiny PDF with two pages, two bookmarks and one sticky note.
@@ -707,7 +707,7 @@ fn three_tab_harness() -> Harness<'static, PdfCraftApp> {
 fn close_named_tab(h: &mut Harness<'static, PdfCraftApp>, name: &str) {
     // The close button has no separate accessible label. Its centre is defined by
     // chrome::tab relative to the actual accessible tab rectangle, not a viewport guess.
-    let pos = h.get_by_label(name).rect().right_center() - egui::vec2(16.0, 0.0);
+    let pos = h.get_by_role_and_label(egui::accesskit::Role::Tab, name).rect().right_center() - egui::vec2(16.0, 0.0);
     h.event(egui::Event::PointerMoved(pos));
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
     h.run_steps(1);
@@ -785,4 +785,73 @@ fn cancelling_then_discarding_an_earlier_dirty_tab_preserves_the_selected_docume
         assert_eq!(doc.bytes.as_slice(), FIXTURE);
         assert!(!doc.dirty);
     }
+}
+
+#[test]
+fn document_tabs_expose_selection_and_activate_from_keyboard() {
+    use egui::accesskit::Role;
+    for key in [egui::Key::Enter, egui::Key::Space] {
+        let mut h = three_tab_harness();
+        let first = h.get_by_role_and_label(Role::Tab, "first.pdf");
+        assert_eq!(first.accesskit_node().is_selected(), Some(false));
+        assert_eq!(h.get_by_role_and_label(Role::Tab, "last.pdf").accesskit_node().is_selected(), Some(true));
+        first.focus();
+        h.run_steps(2);
+        assert!(h.get_by_role_and_label(Role::Tab, "first.pdf").is_focused());
+        h.key_press(key);
+        h.run_steps(3);
+        assert_eq!(h.state().active, Some(0));
+        assert_eq!(h.get_by_role_and_label(Role::Tab, "first.pdf").accesskit_node().is_selected(), Some(true));
+        assert_eq!(h.get_by_role_and_label(Role::Tab, "last.pdf").accesskit_node().is_selected(), Some(false));
+        assert_eq!(h.state().views.len(), 3, "activation does not hit the close button");
+        for doc in h.state().session.docs() {
+            assert_eq!(doc.bytes.as_slice(), FIXTURE);
+            assert!(!doc.dirty);
+        }
+        if let Ok(dir) = std::env::var("PDFCRAFT_TAB_SHOTS") {
+            settle(&mut h);
+            h.render().unwrap().save(format!("{dir}/focused-tab-{key:?}.png")).unwrap();
+        }
+    }
+}
+
+#[test]
+fn document_tab_identity_survives_dirty_labels_and_removing_an_earlier_document() {
+    use egui::accesskit::Role;
+    let mut h = three_tab_harness();
+    h.get_by_role_and_label(Role::Tab, "middle.pdf").click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Tab, "middle.pdf").focus();
+    h.run_steps(2);
+    let middle_id = h.get_by_role_and_label(Role::Tab, "middle.pdf").accesskit_node().id();
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::SetInfo { key: "Title".into(), value: "Unsaved title".into() }));
+    h.run_steps(3);
+    let dirty = h.get_by_role_and_label(Role::Tab, "middle.pdf (edited)");
+    assert_eq!(dirty.accesskit_node().id(), middle_id);
+    assert!(dirty.is_focused());
+    close_named_tab(&mut h, "first.pdf");
+    assert_eq!(h.get_by_role_and_label(Role::Tab, "middle.pdf (edited)").accesskit_node().id(), middle_id);
+    assert_eq!(h.state().active, Some(0));
+    assert_eq!(h.state().views.len(), 2);
+    assert!(h.state().session.get(h.state().views[0].id).unwrap().dirty);
+}
+
+#[test]
+fn combine_tab_uses_tab_interaction_without_changing_close_or_document_state() {
+    use egui::accesskit::Role;
+    let mut h = three_tab_harness();
+    let document_ids: Vec<_> = h.state().views.iter().map(|v| v.id).collect();
+    h.state_mut().execute("page.combine");
+    h.run_steps(3);
+    assert_eq!(h.get_by_role_and_label(Role::Tab, "Combine files").accesskit_node().is_selected(), Some(true));
+    h.get_by_role_and_label(Role::Tab, "first.pdf").click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Tab, "Combine files").focus();
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(h.get_by_role_and_label(Role::Tab, "Combine files").accesskit_node().is_selected(), Some(true));
+    close_named_tab(&mut h, "Combine files");
+    assert!(h.query_by_role_and_label(Role::Tab, "Combine files").is_none());
+    assert_eq!(h.state().views.iter().map(|v| v.id).collect::<Vec<_>>(), document_ids);
 }

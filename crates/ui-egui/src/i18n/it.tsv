@@ -2193,3 +2193,11 @@ key	Space	Spazio
 	Collapse all	Comprimi tutto
 	Remove page	Rimuovi pagina
 	Remove {n} pages	Rimuovi {n} pagine
+
+# Shared panel docking
+	Reset panel layout	Ripristina disposizione pannelli
+	Float panel	Rendi pannello flottante
+	Move to group	Sposta nel gruppo
+	Panels	Pannelli
+	Resize panels	Ridimensiona pannelli
+	Resize panel window	Ridimensiona finestra pannello

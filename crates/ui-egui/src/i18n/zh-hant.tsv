@@ -2070,3 +2070,13 @@ key	Space	空格
 	Collapse all	全部摺疊
 	Remove page	刪除頁面
 	Remove {n} pages	刪除 {n} 頁
+
+# Shared panel docking
+	Reset panel layout	重設面板配置
+	Float panel	浮動面板
+	Move to group	移至群組
+	Panels	面板
+	Resize panels	調整面板大小
+	Resize panel window	調整面板視窗大小
+	Tools	工具
+	Inspector	檢查器
