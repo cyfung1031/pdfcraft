@@ -2397,8 +2397,13 @@ impl Session {
             };
             e.cos.note_repair(line);
         }
-        let marks = editor.as_ref().map(|e| pdfcraft_edit::marks_present(&e.cos)).unwrap_or_default();
-        let added = editor.as_ref().map(|e| pdfcraft_edit::list_added(&e.cos)).unwrap_or_default();
+        let (marks, added) = editor
+            .as_ref()
+            .map(|e| {
+                let scan = pdfcraft_edit::scan_markers(&e.cos);
+                (scan.marks, scan.added)
+            })
+            .unwrap_or_default();
         let links = editor.as_ref().map(|e| pdfcraft_annot::links::list(&e.cos)).unwrap_or_default();
         let sig_cache = Arc::new(pdfcraft_sign::DigestCache::default());
         let signatures = editor.as_ref().map(|e| signatures_of(&e.cos, &bytes, &self.trust, &sig_cache)).unwrap_or_default();

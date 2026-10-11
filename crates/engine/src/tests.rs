@@ -1250,6 +1250,52 @@ fn headers_footers_watermarks_and_backgrounds_show_update_and_remove() {
 }
 
 #[test]
+fn open_populates_marks_and_added_from_the_combined_marker_scan() {
+    let (mut source, source_id) = session_with(1);
+    let mut header = HeaderFooter::default();
+    header.text[0] = "Header".into();
+    source.apply(source_id, Edit::AddHeaderFooter { pages: vec![0], settings: header, replace: false }).unwrap();
+    source
+        .apply(
+            source_id,
+            Edit::AddWatermark { pages: vec![0], settings: Watermark { text: "Draft".into(), ..Watermark::default() }, file: None, replace: false },
+        )
+        .unwrap();
+    source
+        .apply(
+            source_id,
+            Edit::AddBackground {
+                pages: vec![0],
+                settings: Background { color: [0.9, 0.9, 1.0], opacity: 1.0, ..Background::default() },
+                replace: false,
+                file: None,
+            },
+        )
+        .unwrap();
+    source
+        .apply(
+            source_id,
+            Edit::AddText { page: 0, text: AddedText { rect: [20.0, 250.0, 180.0, 280.0], text: "Added note".into(), ..Default::default() } },
+        )
+        .unwrap();
+
+    let bytes = source.save_bytes(source_id).unwrap();
+    let reference = pdfcraft_cos::Document::open(bytes.clone()).unwrap();
+    let expected_marks = pdfcraft_edit::marks_present(&reference);
+    let expected_added = pdfcraft_edit::list_added(&reference);
+    let mut reopened = Session::new();
+    let reopened_id = reopened.open("marked.pdf", None, bytes, None).unwrap();
+    let opened = reopened.get(reopened_id).unwrap();
+    assert_eq!(opened.marks, expected_marks);
+    assert_eq!(opened.added, expected_added);
+    assert_eq!(opened.marks.len(), 3);
+    assert!(opened.marks.contains(&MarkKind::HeaderFooter));
+    assert!(opened.marks.contains(&MarkKind::Watermark));
+    assert!(opened.marks.contains(&MarkKind::Background));
+    assert_eq!(opened.added.len(), 1);
+}
+
+#[test]
 fn export_images_and_text_follow_the_working_file() {
     let (mut s, id) = session_with(2);
     s.apply(id, Edit::RotatePages { pages: vec![1], degrees: 90 }).unwrap();

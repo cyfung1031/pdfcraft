@@ -636,7 +636,10 @@ pub use images::{ImageChange, PageImage, change_image, page_images, reading_imag
 pub mod text;
 pub use text::{BlockStyle, LineEdit, TextBlock, TextLine, reading_blocks, replace_block, replace_line, rewrite_block, text_blocks, text_lines};
 pub mod added;
-pub use added::{Added, AddedImage, AddedText, Align, Content, Family, add_content, delete_content, first_undrawable, list_added, update_content};
+pub use added::{
+    Added, AddedImage, AddedText, Align, Content, Family, MarkerScan, add_content, delete_content, first_undrawable, list_added, scan_markers,
+    update_content,
+};
 
 #[cfg(test)]
 mod tests;

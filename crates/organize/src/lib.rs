@@ -274,7 +274,8 @@ fn drop_named_destinations(doc: &mut Document, gone: &[ObjRef]) -> Result<Vec<Ve
             }
         }
         Some(Object::Dict(mut d)) => {
-            if prune_legacy(doc, &mut d, gone, &mut dead) {
+            let changed = prune_legacy(doc, &mut d, gone, &mut dead);
+            if changed {
                 doc.update_dict(root, |c| c.set(b"Dests".to_vec(), Object::Dict(d)))?;
             }
         }

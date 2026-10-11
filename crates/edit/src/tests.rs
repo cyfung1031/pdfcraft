@@ -247,6 +247,163 @@ fn added_items_follow_the_page_user_unit() {
     assert_eq!((old.rect[0], old.rect[2], old.rect[3], old.size), (144.0, 600.0, 1400.0, 28.0), "scaled to points");
 }
 
+fn tagged_dictionary(tag: &str, added: Option<Object>) -> Dict {
+    let mut dict = Dict::new();
+    dict.set(b"PCMark".to_vec(), Object::name(tag));
+    if let Some(added) = added {
+        dict.set(b"PCAdded".to_vec(), added);
+    }
+    dict
+}
+
+fn tagged_stream(doc: &mut Document, tag: &str, added: Option<Object>) -> Object {
+    Object::Ref(doc.add(Object::Stream(Stream::from_raw(tagged_dictionary(tag, added), Vec::new()))))
+}
+
+fn added_text_params() -> Dict {
+    let mut params = Dict::new();
+    params.set(b"Rect".to_vec(), Object::Array([10, 20, 110, 40].into_iter().map(Object::Int).collect()));
+    params.set(b"Kind".to_vec(), Object::name("Text"));
+    params.set(b"Text".to_vec(), Object::String(pdfcraft_cos::PdfString::text("Added text")));
+    params.set(b"Size".to_vec(), Object::Int(12));
+    params
+}
+
+fn added_image_params(image: pdfcraft_cos::ObjRef) -> Dict {
+    let mut params = Dict::new();
+    params.set(b"Rect".to_vec(), Object::Array([10, 20, 110, 70].into_iter().map(Object::Int).collect()));
+    params.set(b"Kind".to_vec(), Object::name("Image"));
+    params.set(b"Image".to_vec(), Object::Ref(image));
+    params
+}
+
+fn set_page_contents(doc: &mut Document, contents: Object, user_unit: Option<Object>) {
+    let page = pdfcraft_model::pages(doc)[0].obj;
+    doc.update_dict(page, |dict| {
+        dict.set(b"Contents".to_vec(), contents);
+        if let Some(user_unit) = user_unit {
+            dict.set(b"UserUnit".to_vec(), user_unit);
+        }
+    })
+    .unwrap();
+}
+
+fn assert_marker_scan_matches_legacy(doc: &Document, label: &str, marks: &[MarkKind], added: usize) -> MarkerScan {
+    let expected_marks = marks_present(doc);
+    let expected_added = list_added(doc);
+    let scan = scan_markers(doc);
+    assert_eq!(scan.marks, expected_marks, "{label}: marks differ from the independent scan");
+    assert_eq!(scan.added, expected_added, "{label}: added content differs from the independent scan");
+    assert_eq!(scan.marks, marks, "{label}: fixture's mark order or deduplication is wrong");
+    assert_eq!(scan.added.len(), added, "{label}: fixture's added-item count is wrong");
+    scan
+}
+
+#[test]
+fn combined_marker_scan_matches_the_independent_scans() {
+    let empty = build(&["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Page /Parent 2 0 R >>"]);
+    assert_marker_scan_matches_legacy(&empty, "empty page", &[], 0);
+    assert_marker_scan_matches_legacy(&fixture(), "ordinary streams and a page without contents", &[], 0);
+
+    for (tag, kind) in [("HeaderFooter", MarkKind::HeaderFooter), ("Watermark", MarkKind::Watermark), ("Background", MarkKind::Background)] {
+        let mut doc = fixture();
+        let marker = tagged_stream(&mut doc, tag, None);
+        set_page_contents(&mut doc, marker, None);
+        assert_marker_scan_matches_legacy(&doc, tag, &[kind], 0);
+    }
+
+    let mut all_marks = fixture();
+    let background = tagged_stream(&mut all_marks, "Background", None);
+    let watermark = tagged_stream(&mut all_marks, "Watermark", None);
+    let header = tagged_stream(&mut all_marks, "HeaderFooter", None);
+    set_page_contents(
+        &mut all_marks,
+        Object::Array(vec![background.clone(), watermark.clone(), header.clone(), watermark, header, background]),
+        None,
+    );
+    assert_marker_scan_matches_legacy(&all_marks, "all mark kinds repeated", &[MarkKind::Background, MarkKind::Watermark, MarkKind::HeaderFooter], 0);
+
+    let mut single_reference = fixture();
+    let marker = tagged_stream(&mut single_reference, "Watermark", None);
+    set_page_contents(&mut single_reference, marker, None);
+    assert_marker_scan_matches_legacy(&single_reference, "contents as one reference", &[MarkKind::Watermark], 0);
+
+    let mut text_only = fixture();
+    let text = tagged_stream(&mut text_only, "Added", Some(Object::Dict(added_text_params())));
+    set_page_contents(&mut text_only, text, None);
+    let text_scan = assert_marker_scan_matches_legacy(&text_only, "one added text item", &[], 1);
+    assert!(matches!(&text_scan.added[0].content, Content::Text(text) if text.text == "Added text"));
+
+    let mut image_only = fixture();
+    let image = image_only.add(Object::Stream(Stream::from_raw(Dict::new(), vec![0])));
+    let image_item = tagged_stream(&mut image_only, "Added", Some(Object::Dict(added_image_params(image))));
+    set_page_contents(&mut image_only, image_item, None);
+    let image_scan = assert_marker_scan_matches_legacy(&image_only, "one added image item", &[], 1);
+    assert!(matches!(&image_scan.added[0].content, Content::Image(item) if item.image == image));
+
+    let mut interleaved = fixture();
+    let text = tagged_stream(&mut interleaved, "Added", Some(Object::Dict(added_text_params())));
+    let watermark = tagged_stream(&mut interleaved, "Watermark", None);
+    let image = interleaved.add(Object::Stream(Stream::from_raw(Dict::new(), vec![0])));
+    let image_item = tagged_stream(&mut interleaved, "Added", Some(Object::Dict(added_image_params(image))));
+    let header = tagged_stream(&mut interleaved, "HeaderFooter", None);
+    set_page_contents(&mut interleaved, Object::Array(vec![text, watermark, image_item, header]), None);
+    let interleaved_scan =
+        assert_marker_scan_matches_legacy(&interleaved, "marks and added content interleaved", &[MarkKind::Watermark, MarkKind::HeaderFooter], 2);
+    assert!(matches!(&interleaved_scan.added[0].content, Content::Text(_)));
+    assert!(matches!(&interleaved_scan.added[1].content, Content::Image(_)));
+
+    let mut array_contents = fixture();
+    let background = tagged_stream(&mut array_contents, "Background", None);
+    let array_ref = array_contents.add(Object::Array(vec![background]));
+    set_page_contents(&mut array_contents, Object::Ref(array_ref), None);
+    assert_marker_scan_matches_legacy(&array_contents, "contents as an indirect array", &[MarkKind::Background], 0);
+
+    let mut malformed = fixture();
+    let indirect_mark = malformed.add(Object::Dict(tagged_dictionary("HeaderFooter", None)));
+    let missing_added = tagged_stream(&mut malformed, "Added", None);
+    let invalid_added = tagged_stream(&mut malformed, "Added", Some(Object::String(pdfcraft_cos::PdfString::text("bad params"))));
+    let unknown = tagged_stream(&mut malformed, "FutureKind", None);
+    let direct_watermark = Object::Dict(tagged_dictionary("Watermark", None));
+    let direct_added = Object::Dict(tagged_dictionary("Added", Some(Object::Dict(added_text_params()))));
+    set_page_contents(
+        &mut malformed,
+        Object::Array(vec![
+            Object::Null,
+            Object::Int(7),
+            Object::name("not-a-stream"),
+            direct_watermark,
+            Object::Ref(indirect_mark),
+            missing_added,
+            invalid_added,
+            unknown,
+            direct_added,
+        ]),
+        None,
+    );
+    assert_marker_scan_matches_legacy(
+        &malformed,
+        "malformed, non-stream, unknown and direct entries",
+        &[MarkKind::Watermark, MarkKind::HeaderFooter],
+        0,
+    );
+
+    let mut shared = fixture();
+    let added = tagged_stream(&mut shared, "Added", Some(Object::Dict(added_text_params())));
+    let mark = tagged_stream(&mut shared, "Background", None);
+    set_page_contents(&mut shared, Object::Array(vec![added.clone(), mark.clone(), added.clone(), mark]), None);
+    let shared_scan = assert_marker_scan_matches_legacy(&shared, "repeated shared stream references", &[MarkKind::Background], 2);
+    assert_eq!(shared_scan.added[0].obj, shared_scan.added[1].obj);
+
+    let mut user_unit = fixture();
+    let added = tagged_stream(&mut user_unit, "Added", Some(Object::Dict(added_text_params())));
+    set_page_contents(&mut user_unit, added, Some(Object::Int(2)));
+    let unit_scan = assert_marker_scan_matches_legacy(&user_unit, "non-1.0 UserUnit", &[], 1);
+    let Content::Text(text) = &unit_scan.added[0].content else { panic!() };
+    assert_eq!(text.rect, [20.0, 40.0, 220.0, 80.0]);
+    assert_eq!(text.size, 24.0);
+}
+
 #[test]
 fn added_text_and_images_are_page_content_that_stays_editable() {
     let mut doc = fixture();

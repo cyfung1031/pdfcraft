@@ -14,7 +14,7 @@ use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream};
 use pdfcraft_fonts::{GlyphError, GlyphOutline, ShapedCluster, arabic_glyph, helvetica_width, literal, shape_arabic, win_ansi};
 use unicode_bidi::{Level, ParagraphBidiInfo};
 
-use crate::{EditError, check, contents, n, page_list, place_tagged};
+use crate::{EditError, MarkKind, check, contents, n, page_list, place_tagged};
 
 const TAG: &str = "Added";
 
@@ -196,6 +196,13 @@ pub struct Added {
     /// The item's content stream.
     pub obj: ObjRef,
     pub content: Content,
+}
+
+/// PdfCraft-owned page content discovered in one page/content traversal.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MarkerScan {
+    pub marks: Vec<MarkKind>,
+    pub added: Vec<Added>,
 }
 
 fn nums(doc: &Document, o: Option<&Object>) -> Vec<f64> {
@@ -726,6 +733,55 @@ fn parse(doc: &Document, d: &Dict) -> Option<Content> {
         }
         _ => None,
     }
+}
+
+/// Finds page marks and editable added content in one pass over the page content entries.
+pub fn scan_markers(doc: &Document) -> MarkerScan {
+    let mut scan = MarkerScan::default();
+    for (pi, page) in page_list(doc).iter().enumerate() {
+        let Some(contents) = page.dict.get(b"Contents").cloned() else { continue };
+        let entries = match &*doc.resolve(&contents) {
+            Object::Array(entries) => entries.clone(),
+            _ => vec![contents],
+        };
+        for entry in entries {
+            let resolved = doc.resolve(&entry);
+            let Some(dict) = resolved.as_dict() else { continue };
+            let tag = dict.name(b"PCMark");
+            let kind = if tag == Some(&b"HeaderFooter"[..]) {
+                Some(MarkKind::HeaderFooter)
+            } else if tag == Some(&b"Watermark"[..]) {
+                Some(MarkKind::Watermark)
+            } else if tag == Some(&b"Background"[..]) {
+                Some(MarkKind::Background)
+            } else {
+                None
+            };
+            if let Some(kind) = kind
+                && !scan.marks.contains(&kind)
+            {
+                scan.marks.push(kind);
+            }
+
+            let Some(obj) = Object::as_ref(&entry) else { continue };
+            if tag != Some(TAG.as_bytes()) {
+                continue;
+            }
+            let Some(params) = dict.get(b"PCAdded").and_then(|o| doc.resolve(o).as_dict().cloned()) else { continue };
+            if let Some(content) = parse(doc, &params) {
+                // Display points depend on the page's /UserUnit. An item records the one it was
+                // written for; none means 1, as for items written before display space followed
+                // /UserUnit.
+                let written = params
+                    .get(b"UserUnit")
+                    .and_then(Object::as_f64)
+                    .filter(|u| u.is_finite() && *u >= 1.0)
+                    .map_or(1.0, |u| u.min(pdfcraft_model::MAX_USER_UNIT));
+                scan.added.push(Added { page: pi, obj, content: content.scaled(page.user_unit(doc) / written) });
+            }
+        }
+    }
+    scan
 }
 
 fn validate(c: &Content) -> Result<(), EditError> {
