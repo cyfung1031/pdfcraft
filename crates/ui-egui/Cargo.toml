@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version = "1.95"
+autotests = false
 
 [lints]
 workspace = true
@@ -70,3 +71,135 @@ skrifa = "0.44"
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
+
+[[test]]
+name = "ui_group"
+path = "tests/ui_group.rs"
+
+[[test]]
+name = "accessibility"
+path = "tests/accessibility.rs"
+
+[[test]]
+name = "actions"
+path = "tests/actions.rs"
+
+[[test]]
+name = "bookmarks"
+path = "tests/bookmarks.rs"
+
+[[test]]
+name = "buttons"
+path = "tests/buttons.rs"
+
+[[test]]
+name = "combine_grid"
+path = "tests/combine_grid.rs"
+
+[[test]]
+name = "commands"
+path = "tests/commands.rs"
+
+[[test]]
+name = "comments"
+path = "tests/comments.rs"
+
+[[test]]
+name = "compare"
+path = "tests/compare.rs"
+
+[[test]]
+name = "content"
+path = "tests/content.rs"
+
+[[test]]
+name = "control"
+path = "tests/control.rs"
+
+[[test]]
+name = "create"
+path = "tests/create.rs"
+
+[[test]]
+name = "date_format"
+path = "tests/date_format.rs"
+
+[[test]]
+name = "document_links"
+path = "tests/document_links.rs"
+
+[[test]]
+name = "editing"
+path = "tests/editing.rs"
+
+[[test]]
+name = "export"
+path = "tests/export.rs"
+
+[[test]]
+name = "fill_sign"
+path = "tests/fill_sign.rs"
+
+[[test]]
+name = "folders"
+path = "tests/folders.rs"
+
+[[test]]
+name = "fonts"
+path = "tests/fonts.rs"
+
+[[test]]
+name = "forms"
+path = "tests/forms.rs"
+
+[[test]]
+name = "javascript"
+path = "tests/javascript.rs"
+
+[[test]]
+name = "object_selection"
+path = "tests/object_selection.rs"
+
+[[test]]
+name = "ocr"
+path = "tests/ocr.rs"
+
+[[test]]
+name = "perf"
+path = "tests/perf.rs"
+
+[[test]]
+name = "pickers"
+path = "tests/pickers.rs"
+
+[[test]]
+name = "prepare"
+path = "tests/prepare.rs"
+
+[[test]]
+name = "print"
+path = "tests/print.rs"
+
+[[test]]
+name = "recovery"
+path = "tests/recovery.rs"
+
+[[test]]
+name = "signing"
+path = "tests/signing.rs"
+
+[[test]]
+name = "stamps"
+path = "tests/stamps.rs"
+
+[[test]]
+name = "ui"
+path = "tests/ui.rs"
+
+[[test]]
+name = "view"
+path = "tests/view.rs"
+
+[[test]]
+name = "viewer"
+path = "tests/viewer.rs"
