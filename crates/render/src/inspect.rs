@@ -547,6 +547,19 @@ pub fn check_pages(bytes: Arc<Vec<u8>>, password: Option<&str>, expected: usize)
 /// Inspect a document. Fails only if the renderer itself cannot open the file (or needs a
 /// password). Never panics: parser crashes are caught and reported.
 pub fn inspect(bytes: Arc<Vec<u8>>, password: Option<&str>) -> Result<DocInfo, OpenError> {
+    inspect_inner(bytes, password, None)
+}
+
+/// Inspect bytes while reusing the COS parse for the same source opened by the editor.
+///
+/// A source is reused only when it owns the same `Arc` as `bytes`; otherwise inspection falls
+/// back to the independent parser path. The inspection view has separate bounded caches.
+pub fn inspect_with_cos(bytes: Arc<Vec<u8>>, password: Option<&str>, source: &pdfcraft_cos::Document) -> Result<DocInfo, OpenError> {
+    let source = Arc::ptr_eq(source.bytes(), &bytes).then_some(source);
+    inspect_inner(bytes, password, source)
+}
+
+fn inspect_inner(bytes: Arc<Vec<u8>>, password: Option<&str>, source: Option<&pdfcraft_cos::Document>) -> Result<DocInfo, OpenError> {
     let pdf = catch_unwind(AssertUnwindSafe(|| Pdf::new_with_password(bytes.clone(), password.unwrap_or(""))))
         .map_err(|p| OpenError::Invalid(format!("the parser crashed: {}", crate::raster::panic_message(&p))))?
         .map_err(|e| match e {
@@ -591,7 +604,11 @@ pub fn inspect(bytes: Arc<Vec<u8>>, password: Option<&str>) -> Result<DocInfo, O
         // The lazy reader first; lopdf's repair/tolerance path when it can't expose the same
         // page tree or an object a panel needs. No partial result is published.
         let lazy = catch_unwind(AssertUnwindSafe(|| {
-            let doc = LazyStructure::new(bytes.clone(), password).ok()?;
+            let doc = match source {
+                Some(source) => LazyStructure::from_document(source),
+                None => LazyStructure::new(bytes.clone(), password),
+            }
+            .ok()?;
             let mut t = DocInfo { pages: tmp.pages.clone(), ..Default::default() };
             let inspector = Inspector::new(&doc);
             if inspector.page_index.len() != t.pages.len() {
@@ -3140,14 +3157,25 @@ trailer << /Root 1 0 R >>
             [plain, stm]
         });
         for bytes in fixtures {
-            let lazy = LazyStructure::new(Arc::new(bytes.clone()), None).unwrap();
+            let shared_bytes = Arc::new(bytes.clone());
+            let source = pdfcraft_cos::Document::open(shared_bytes.clone()).unwrap();
+            let lazy = LazyStructure::from_document(&source).unwrap();
             let eager = Document::load_mem(&bytes).unwrap();
-            let mut a = inspect(Arc::new(bytes), None).unwrap();
+            let mut a = inspect(shared_bytes.clone(), None).unwrap();
+            crate::structure::reset_source_path_counts();
+            let shared = inspect_with_cos(shared_bytes.clone(), None, &source).unwrap();
+            assert_eq!(crate::structure::source_path_counts(), (0, 1), "shared inspection must reuse the supplied COS source");
+            let other_bytes = Arc::new(bytes.clone());
+            crate::structure::reset_source_path_counts();
+            let independent = inspect_with_cos(other_bytes, None, &source).unwrap();
+            assert_eq!(crate::structure::source_path_counts(), (1, 0), "mismatched bytes must use one independent COS source");
             let mut b = DocInfo { pages: a.pages.clone(), ..Default::default() };
             let mut c = DocInfo { pages: a.pages.clone(), ..Default::default() };
             Inspector::new(&lazy).fill(&mut b);
             Inspector::new(&eager).fill(&mut c);
             assert!(!lazy.failed());
+            assert_eq!(format!("{shared:?}"), format!("{a:?}"), "shared COS inspection changed output");
+            assert_eq!(format!("{independent:?}"), format!("{a:?}"), "a mismatched source must use the independent path");
             assert_eq!(format!("{b:?}"), format!("{c:?}"));
             a.file_size = 0;
             a.pdf_version.clear();
