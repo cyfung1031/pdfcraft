@@ -221,7 +221,6 @@ fn record_link_scan() {
         counts.set((markers, links + 1));
     });
 }
-
 use pdfcraft_cos::{SaveOptions, write_full, write_incremental};
 use pdfcraft_render::{DocInfo, Layer, LayerOp, OpenError, ReadingColors, RenderConfig, RenderPool, inspect};
 
@@ -415,6 +414,7 @@ pub struct Document {
     links: OnceLock<Vec<pdfcraft_annot::links::LinkItem>>,
     /// Signature fields, validated against the session's trust store (Signatures panel).
     pub signatures: Arc<Vec<SignatureInfo>>,
+    signature_presence: OnceLock<bool>,
     trust: Arc<TrustStore>,
     sig_cache: Arc<pdfcraft_sign::DigestCache>,
     editor: Option<Editor>,
@@ -672,7 +672,10 @@ impl Document {
 
     /// Signed: at least one signature field holds a signature.
     pub fn is_signed(&self) -> bool {
-        self.signatures.iter().any(|s| s.signed)
+        *self.signature_presence.get_or_init(|| {
+            let Some(editor) = self.editor.as_ref() else { return false };
+            has_signed_signature_field(&editor.cos) || pdfcraft_sign::pdf::has_document_timestamp(&editor.cos, &self.sig_cache)
+        })
     }
 
     /// Whether comments are hidden (Comments ▸ Hide all comments).
@@ -3417,6 +3420,29 @@ fn signatures_of(cos: &pdfcraft_cos::Document, bytes: &[u8], trust: &TrustStore,
     pdfcraft_sign::pdf::list_cached(cos, bytes, trust, cache)
 }
 
+fn has_signed_signature_field(cos: &pdfcraft_cos::Document) -> bool {
+    pdfcraft_forms::fields_with_adopted(cos).items.into_iter().filter(|field| field.kind == pdfcraft_forms::FieldKind::Signature).any(|field| {
+        let mut current = Some(field.obj);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(reference) = current {
+            if !seen.insert(reference) || seen.len() > 64 {
+                break;
+            }
+            let object = cos.get(reference);
+            let Some(dict) = object.as_dict() else { break };
+            if let Some(value) = dict.get(b"V") {
+                return cos.resolve(value).as_dict().is_some();
+            }
+            current = dict.reference(b"Parent");
+        }
+        false
+    })
+}
+
+fn invalidate_signature_presence(doc: &mut Document) {
+    doc.signature_presence.take();
+}
+
 impl Session {
     pub fn new() -> Self {
         Self::default()
@@ -3781,6 +3807,7 @@ impl Session {
             marker_scan: OnceLock::new(),
             links: OnceLock::new(),
             signatures: Arc::new(signatures),
+            signature_presence: OnceLock::new(),
             trust: trust.clone(),
             sig_cache,
             editor,
@@ -4083,6 +4110,7 @@ impl Session {
     /// Comment and form edits skip the full re-inspection (seconds on very large files): the
     /// comment list and field values are re-read from the object graph instead.
     fn refresh_scoped(doc: &mut Document, scope: Scope) -> Result<(), EditError> {
+        invalidate_signature_presence(doc);
         if scope == Scope::Full || doc.info.encrypted != doc.editor.as_ref().is_some_and(|e| e.cos.output_handler().is_some()) {
             return Self::refresh(doc);
         }
@@ -4196,6 +4224,7 @@ impl Session {
     /// from undo/redo, re-reads both: always correct, rarely paid). The cached display
     /// appearances are kept: content edits leave every annotation dictionary alone.
     fn refresh_content(doc: &mut Document, edit: Option<&Edit>) -> Result<(), EditError> {
+        invalidate_signature_presence(doc);
         Self::release_working(doc);
         sync_xfa_state(doc);
         let Some(editor) = doc.editor.as_mut() else { return Ok(()) };
@@ -4255,6 +4284,7 @@ impl Session {
     }
 
     fn refresh_with_indexes(doc: &mut Document, invalidate_markers: bool, invalidate_links: bool) -> Result<(), EditError> {
+        invalidate_signature_presence(doc);
         // A full refresh may follow structural or annotation changes: cached appearances
         // may be stale, so they are rebuilt below.
         if let Some(editor) = doc.editor.as_mut() {

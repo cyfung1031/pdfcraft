@@ -5973,6 +5973,77 @@ fn adopting_page_only_fields_is_noted_as_a_repair() {
     assert_eq!(doc.repair_log(), vec!["the form's /Fields list omits 2 fields; they were read from the page annotations".to_string()]);
 }
 
+#[test]
+fn signed_state_covers_adopted_signature_fields_before_validation() {
+    let make_pdf = |widget: bool, value: Option<&str>| {
+        let mut objs = vec![
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 300] >>".to_string(),
+            format!("<< /Type /Page /Parent 2 0 R /Annots {} >>", if widget { "[5 0 R]" } else { "[]" }),
+            "<< /Fields [] /DA (/Helv 0 Tf 0 g) >>".to_string(),
+            format!("<< /Type /Annot /Subtype /Widget /FT /Sig /T (adopted) /Rect [10 200 90 220] /P 3 0 R{} >>", value.unwrap_or("")),
+        ];
+        if value.is_some() {
+            objs.push("<< /Type /Sig >>".to_string());
+        }
+        let mut bytes = b"%PDF-1.7\n".to_vec();
+        let mut offsets = Vec::new();
+        for (i, object) in objs.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = bytes.len();
+        bytes.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+        for offset in offsets {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        bytes.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+        bytes
+    };
+    let open = |bytes| {
+        let mut session = Session::new();
+        let id = session.open("signature.pdf", None, Arc::new(bytes), None).unwrap();
+        (session, id)
+    };
+
+    let (session, id) = open(make_pdf(false, None));
+    assert!(!session.get(id).unwrap().is_signed(), "no signature field");
+    let (session, id) = open(make_pdf(true, None));
+    assert!(!session.get(id).unwrap().is_signed(), "empty signature field");
+    let (session, id) = open(make_pdf(true, Some(" /V 6 0 R")));
+    let doc = session.get(id).unwrap();
+    assert!(doc.is_signed(), "a malformed signature dictionary still blocks full rewrites");
+    assert!(doc.signatures.is_empty(), "the adopted page-only field is outside current validation output");
+}
+
+#[test]
+fn signed_state_covers_standalone_document_timestamps() {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 300] >>",
+        "<< /Type /Page /Parent 2 0 R >>",
+        "<< /Type /DocTimeStamp /SubFilter /ETSI.RFC3161 /ByteRange [0 1 2 1] >>",
+    ];
+    let mut bytes = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, object) in objects.iter().enumerate() {
+        offsets.push(bytes.len());
+        bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = bytes.len();
+    bytes.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for offset in offsets {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+
+    let mut session = Session::new();
+    let id = session.open("timestamp.pdf", None, Arc::new(bytes), None).unwrap();
+    let doc = session.get(id).unwrap();
+    assert!(doc.is_signed());
+    assert!(doc.signatures.iter().any(|signature| signature.doc_timestamp));
+}
+
 /// A page too large for the renderer at the asked resolution exports at the most it allows (and
 /// says at what), as File ▸ Export does; a source that asks for strictness refuses it instead.
 #[test]
