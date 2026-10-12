@@ -3454,27 +3454,36 @@ fn signing_saving_trusting_and_commenting_afterwards() {
     // After the test certificate's start date (2026-10-02).
     let mut s = Session::new().with_clock(|| 1_800_000_000);
     let id = s.open("fixture.pdf", None, Arc::new(fixture(2)), None).unwrap();
-    assert!(s.get(id).unwrap().signatures.is_empty());
+    let doc = s.get(id).unwrap();
+    assert!(doc.validated_signatures().is_none(), "ordinary open defers validation");
+    assert!(!doc.is_signed());
+    assert!(doc.validated_signatures().is_none(), "exact presence checks do not validate");
     let opts = SignOptions { page: 1, rect: Some([20.0, 20.0, 180.0, 60.0]), reason: Some("Approved".into()), ..SignOptions::default() };
     let signed = s.sign(id, &digital_id, opts).unwrap();
     s.mark_signed(id, signed, Some("/tmp/signed.pdf".into())).unwrap();
     let doc = s.get(id).unwrap();
     assert_eq!(doc.name, "signed.pdf");
     assert!(doc.is_signed() && !doc.dirty && doc.can_undo().is_none(), "signing can't be undone");
-    let sig = &doc.signatures[0];
+    assert!(doc.validated_signatures().is_none(), "signed presence does not perform validation");
+    let sig = &doc.signatures()[0];
+    let first = doc.validated_signatures().unwrap();
+    assert!(std::ptr::eq(sig, &first[0]));
+    assert!(std::ptr::eq(first.as_ptr(), doc.signatures().as_ptr()), "repeated reads reuse validation");
     assert_eq!((sig.status, sig.page, sig.date.as_deref()), (SignatureStatus::Unknown, Some(1), Some("D:20270115080000Z")));
     assert_eq!(s.save_full_bytes(id).unwrap_err(), EditError::Signed);
     // Trusting the signer makes it valid; a later comment is permitted.
     s.set_trusted_certificates(vec![digital_id.certificate.clone()]);
-    assert_eq!(s.get(id).unwrap().signatures[0].status, SignatureStatus::Valid);
+    assert!(s.get(id).unwrap().validated_signatures().is_none(), "trust changes invalidate validated details");
+    assert_eq!(s.get(id).unwrap().signatures()[0].status, SignatureStatus::Valid);
     s.apply(id, rect_comment(0, [80.0, 80.0, 120.0, 120.0])).unwrap();
-    let sig = &s.get(id).unwrap().signatures[0];
+    assert!(s.get(id).unwrap().validated_signatures().is_none(), "edits invalidate revision classification");
+    let sig = &s.get(id).unwrap().signatures()[0];
     let comments = sign::Modification::Allowed(vec![sign::kind::COMMENTS]);
     assert_eq!((sig.status, sig.modification.clone()), (SignatureStatus::Valid, comments));
     // Saving keeps the signature (incremental).
     let saved = s.save_bytes(id).unwrap();
     s.mark_saved(id, saved, None).unwrap();
-    assert_eq!(s.get(id).unwrap().signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(s.get(id).unwrap().signatures()[0].status, SignatureStatus::Valid);
     // Edits that would need a full rewrite are refused, and change nothing.
     let before = s.get(id).unwrap().can_undo().map(str::to_owned);
     assert!(matches!(s.apply(id, Edit::Sanitize), Err(EditError::SignedRewrite(_))));
@@ -3493,7 +3502,7 @@ fn validated_signatures_without_layers_keep_their_appearance() {
     s.mark_signed(id, signed, None).unwrap();
     s.set_trusted_certificates(vec![digital_id.certificate.clone()]);
     let doc = s.get(id).unwrap();
-    let sig = &doc.signatures[0];
+    let sig = &doc.signatures()[0];
     assert_eq!(sig.status, SignatureStatus::Valid);
     // Our own flat appearance has no validation layers: nothing is substituted, and
     // the display copy carries no generated caption.
@@ -3515,7 +3524,7 @@ fn signed_pages_render_trust_save_and_reopen() {
     // The signed bytes open elsewhere too: validity is in the file, not the session.
     let mut t = Session::new().with_clock(|| 1_800_000_000);
     let tid = t.open("signed.pdf", None, signed.clone(), None).unwrap();
-    assert!(t.get(tid).unwrap().signatures.iter().any(|x| x.signed && x.status == SignatureStatus::Unknown));
+    assert!(t.get(tid).unwrap().signatures().iter().any(|x| x.signed && x.status == SignatureStatus::Unknown));
     s.mark_signed(id, signed, None).unwrap();
     // The signed page renders, from the file and from the display copy alike.
     for bytes in [s.get(id).unwrap().bytes.clone(), s.get(id).unwrap().display.clone()] {
@@ -3526,12 +3535,12 @@ fn signed_pages_render_trust_save_and_reopen() {
     }
     // Trusting the signer makes it valid; saving keeps it valid across sessions.
     s.set_trusted_certificates(vec![digital_id.certificate.clone()]);
-    assert_eq!(s.get(id).unwrap().signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(s.get(id).unwrap().signatures()[0].status, SignatureStatus::Valid);
     let saved = s.save_bytes(id).unwrap();
     let mut u = Session::new().with_clock(|| 1_800_000_000);
     u.set_trusted_certificates(vec![digital_id.certificate.clone()]);
     let uid = u.open("saved.pdf", None, saved.clone(), None).unwrap();
-    assert_eq!(u.get(uid).unwrap().signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(u.get(uid).unwrap().signatures()[0].status, SignatureStatus::Valid);
 }
 
 #[test]
@@ -3557,13 +3566,13 @@ fn signed_documents_round_trip_behind_a_user_password() {
     let signed = e.sign(eid, &digital_id, SignOptions { page: 0, rect: Some([20.0, 20.0, 180.0, 60.0]), ..SignOptions::default() }).unwrap();
     e.mark_signed(eid, signed, None).unwrap();
     e.set_trusted_certificates(vec![digital_id.certificate.clone()]);
-    assert_eq!(e.get(eid).unwrap().signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(e.get(eid).unwrap().signatures()[0].status, SignatureStatus::Valid);
     let saved = e.save_bytes(eid).unwrap();
     let mut f = Session::new().with_clock(|| 1_800_000_000);
     f.set_trusted_certificates(vec![digital_id.certificate.clone()]);
     assert!(f.open("enc-saved.pdf", None, saved.clone(), Some("wrong")).is_err());
     let fid = f.open("enc-saved.pdf", None, saved.clone(), Some("user")).unwrap();
-    assert_eq!(f.get(fid).unwrap().signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(f.get(fid).unwrap().signatures()[0].status, SignatureStatus::Valid);
 }
 
 /// ByteRange placeholder values: fixed width, patched after writing.
@@ -3704,7 +3713,7 @@ fn assert_signature_artwork_survives_trust(mut cos: pdfcraft_cos::Document, expe
     let original_raster_print = printed_pixels(session.print_pdf(id, &settings).unwrap());
     session.set_trusted_certificates(vec![anchor.clone()]);
     let doc = session.get(id).unwrap();
-    assert_eq!(doc.signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(doc.signatures()[0].status, SignatureStatus::Valid);
     assert!(doc.display == original_display, "trust must preserve all original appearance bytes");
     let mut exporter = export::Exporter::new(doc);
     assert_eq!(exporter.text_of(&[0]).unwrap(), original_text, "text exports retain signer details and baked caption");
@@ -3720,7 +3729,7 @@ fn assert_signature_artwork_survives_trust(mut cos: pdfcraft_cos::Document, expe
     reopened.set_trusted_certificates(vec![anchor]);
     let id = reopened.open("saved.pdf", None, saved, None).unwrap();
     let doc = reopened.get(id).unwrap();
-    assert_eq!(doc.signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(doc.signatures()[0].status, SignatureStatus::Valid);
     let mut exporter = export::Exporter::new(doc);
     assert_eq!(exporter.text_of(&[0]).unwrap(), original_text);
     assert_eq!(exporter.png(0, 72.0).unwrap(), original_png);
@@ -3765,14 +3774,14 @@ fn check_layered_round_trip(signed: Arc<Vec<u8>>, password: Option<&str>, anchor
     let mut s = Session::new().with_clock(|| 1_800_000_000);
     let vid = s.open("layered.pdf", None, signed.clone(), password).unwrap();
     let doc = s.get(vid).unwrap();
-    let sig = &doc.signatures[0];
+    let sig = &doc.signatures()[0];
     assert!(sig.signed && sig.field == "Signature1" && sig.page == Some(0) && sig.visible);
     assert_eq!(sig.status, SignatureStatus::Unknown, "untrusted at first");
     // Trust changes the verdict while preserving every appearance byte. The page
     // overlay is UI chrome and is not part of the document's display/export source.
     s.set_trusted_certificates(vec![anchor.clone()]);
     let doc = s.get(vid).unwrap();
-    assert_eq!(doc.signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(doc.signatures()[0].status, SignatureStatus::Valid);
     assert!(Arc::ptr_eq(&doc.display, &doc.bytes), "trust does not build a signature display copy");
     assert!(bytes_has(&doc.display, b"Not Verified"));
     assert!(!bytes_has(&doc.display, b"Signature valid"));
@@ -3787,7 +3796,7 @@ fn check_layered_round_trip(signed: Arc<Vec<u8>>, password: Option<&str>, anchor
     let mut t = Session::new().with_clock(|| 1_800_000_000);
     t.set_trusted_certificates(vec![anchor.clone()]);
     let tid = t.open("layered-saved.pdf", None, saved.clone(), password).unwrap();
-    let rsig = &t.get(tid).unwrap().signatures[0];
+    let rsig = &t.get(tid).unwrap().signatures()[0];
     assert_eq!(rsig.status, SignatureStatus::Valid);
 }
 
@@ -3801,7 +3810,7 @@ fn trusted_layered_session() -> (Session, DocId) {
     let mut s = Session::new().with_clock(|| 1_800_000_000);
     let vid = s.open("layered.pdf", None, signed, None).unwrap();
     s.set_trusted_certificates(vec![anchor]);
-    assert_eq!(s.get(vid).unwrap().signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(s.get(vid).unwrap().signatures()[0].status, SignatureStatus::Valid);
     (s, vid)
 }
 
@@ -3811,7 +3820,7 @@ fn a_metadata_edit_keeps_the_original_signature_appearance() {
     let (mut s, vid) = trusted_layered_session();
     s.apply(vid, Edit::SetInfo { key: "Title".into(), value: "Contract".into() }).unwrap();
     let doc = s.get(vid).unwrap();
-    assert_eq!(doc.signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(doc.signatures()[0].status, SignatureStatus::Valid);
     assert!(bytes_has(&doc.display, b"Not Verified"));
     assert!(!bytes_has(&doc.display, b"Signature valid"));
 }
@@ -3862,17 +3871,17 @@ fn real_layered_signatures_round_trip_behind_a_user_password() {
     // Encrypted appearance bytes remain unchanged through trust and save/reopen.
     let mut s = Session::new().with_clock(|| 1_800_000_000);
     let vid = s.open("enc.pdf", None, signed.clone(), Some("user")).unwrap();
-    assert_eq!(s.get(vid).unwrap().signatures[0].status, SignatureStatus::Unknown);
+    assert_eq!(s.get(vid).unwrap().signatures()[0].status, SignatureStatus::Unknown);
     s.set_trusted_certificates(vec![anchor.clone()]);
     let doc = s.get(vid).unwrap();
-    assert_eq!(doc.signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(doc.signatures()[0].status, SignatureStatus::Valid);
     assert!(Arc::ptr_eq(&doc.display, &doc.bytes), "encrypted signature artwork remains original");
     let saved = s.save_bytes(vid).unwrap();
     let mut t = Session::new().with_clock(|| 1_800_000_000);
     t.set_trusted_certificates(vec![anchor.clone()]);
     assert!(t.open("enc-saved.pdf", None, saved.clone(), Some("wrong")).is_err());
     let tid = t.open("enc-saved.pdf", None, saved.clone(), Some("user")).unwrap();
-    assert_eq!(t.get(tid).unwrap().signatures[0].status, SignatureStatus::Valid);
+    assert_eq!(t.get(tid).unwrap().signatures()[0].status, SignatureStatus::Valid);
 }
 
 #[test]
@@ -6007,13 +6016,18 @@ fn signed_state_covers_adopted_signature_fields_before_validation() {
     };
 
     let (session, id) = open(make_pdf(false, None));
-    assert!(!session.get(id).unwrap().is_signed(), "no signature field");
+    let doc = session.get(id).unwrap();
+    assert!(!doc.is_signed(), "no signature field");
+    assert!(doc.validated_signatures().is_none());
     let (session, id) = open(make_pdf(true, None));
-    assert!(!session.get(id).unwrap().is_signed(), "empty signature field");
+    let doc = session.get(id).unwrap();
+    assert!(!doc.is_signed(), "empty signature field");
+    assert!(doc.validated_signatures().is_none());
     let (session, id) = open(make_pdf(true, Some(" /V 6 0 R")));
     let doc = session.get(id).unwrap();
     assert!(doc.is_signed(), "a malformed signature dictionary still blocks full rewrites");
-    assert!(doc.signatures.is_empty(), "the adopted page-only field is outside current validation output");
+    assert!(doc.validated_signatures().is_none());
+    assert!(doc.signatures().is_empty(), "the adopted page-only field is outside current validation output");
 }
 
 #[test]
@@ -6041,7 +6055,8 @@ fn signed_state_covers_standalone_document_timestamps() {
     let id = session.open("timestamp.pdf", None, Arc::new(bytes), None).unwrap();
     let doc = session.get(id).unwrap();
     assert!(doc.is_signed());
-    assert!(doc.signatures.iter().any(|signature| signature.doc_timestamp));
+    assert!(doc.validated_signatures().is_none());
+    assert!(doc.signatures().iter().any(|signature| signature.doc_timestamp));
 }
 
 /// A page too large for the renderer at the asked resolution exports at the most it allows (and

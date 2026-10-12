@@ -640,7 +640,7 @@ pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some((index, id)) = app.active_ids() else { return };
     let Some(doc) = app.session.get(id) else { return };
-    let has_signatures = doc.is_signed();
+    let has_signatures = doc.validated_signatures().is_some_and(|sigs| sigs.iter().any(|s| s.signed));
     let has_check = app.a11y.report.as_ref().is_some_and(|(d, _)| *d == id);
     let (has_comments, has_outline, has_fields, has_layers, has_files) = (
         !doc.info.annotations.is_empty(),
