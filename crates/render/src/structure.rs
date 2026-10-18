@@ -12,7 +12,7 @@ use pdfcraft_cos::{Document, Object as CosObject};
 
 #[cfg(test)]
 thread_local! {
-    static SOURCE_PATH_COUNTS: std::cell::Cell<(usize, usize)> = std::cell::Cell::new((0, 0));
+    static SOURCE_PATH_COUNTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 #[cfg(test)]
