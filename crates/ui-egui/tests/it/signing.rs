@@ -17,6 +17,8 @@ endstream endobj
 trailer << /Root 1 0 R >>
 %%EOF";
 
+const SIGNED_FIXTURE: &[u8] = include_bytes!("../../../sign/tests/data/openssl-signed.pdf");
+
 /// A fresh folder per call: tests run in parallel and must not remove each other's files.
 fn dir() -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -28,17 +30,107 @@ fn dir() -> std::path::PathBuf {
 }
 
 fn harness(dir: std::path::PathBuf) -> Harness<'static, PdfCraftApp> {
-    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+    let mut h = harness_with_bytes(dir, FIXTURE.to_vec());
+    h.run_steps(6);
+    h
+}
+
+fn harness_with_bytes(dir: std::path::PathBuf, bytes: Vec<u8>) -> Harness<'static, PdfCraftApp> {
+    Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
         let mut app = PdfCraftApp::new();
         app.set_option("language", "en").unwrap();
-        app.open_bytes("contract.pdf", None, FIXTURE.to_vec()).expect("opens");
+        app.open_bytes("contract.pdf", None, bytes).expect("opens");
+        let id = app.views[0].id;
+        assert!(app.session.get(id).unwrap().validated_signatures().is_none(), "opening a file must defer signature validation");
         app.set_option("left", "closed").unwrap();
         app.export_dir_override = Some(dir.to_string_lossy().into_owned());
         app.save_override = Some(dir.join("contract_signed.pdf").to_string_lossy().into_owned());
         app
-    });
+    })
+}
+
+fn has_signature_indicator_dot(h: &Harness<'static, PdfCraftApp>, button: egui::Rect) -> bool {
+    let expected = button.right_top() + egui::vec2(-8.0, 8.0);
+    h.output()
+        .shapes
+        .iter()
+        .any(|shape| matches!(&shape.shape, egui::Shape::Circle(circle) if circle.radius == 3.0 && circle.center.distance(expected) < 0.1))
+}
+
+fn malformed_signed_fixture() -> Vec<u8> {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R /AcroForm 4 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 200 300] >>",
+        "<< /Type /Page /Parent 2 0 R /Annots [5 0 R] >>",
+        "<< /Fields [] /DA (/Helv 0 Tf 0 g) >>",
+        "<< /Type /Annot /Subtype /Widget /FT /Sig /T (adopted) /Rect [10 200 90 220] /P 3 0 R /V 6 0 R >>",
+        "<< /Type /Sig >>",
+    ];
+    let mut bytes = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, object) in objects.iter().enumerate() {
+        offsets.push(bytes.len());
+        bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = bytes.len();
+    bytes.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes());
+    for offset in offsets {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1).as_bytes());
+    bytes
+}
+
+#[test]
+fn a_fresh_signed_document_shows_its_banner_and_rail_indicator() {
+    let mut h = harness_with_bytes(dir(), SIGNED_FIXTURE.to_vec());
+    let id = h.state().views[0].id;
+    let doc = h.state().session.get(id).expect("opened document");
+    assert!(doc.is_signed());
+
     h.run_steps(6);
-    h
+    let signatures_button = h.get_by_label("Signatures").rect();
+    assert!(has_signature_indicator_dot(&h, signatures_button), "the Signatures rail button should show a presence dot");
+    h.get_by_label("At least one signature has problems.");
+    assert!(
+        h.state()
+            .session
+            .get(id)
+            .unwrap()
+            .validated_signatures()
+            .is_some_and(|sigs| { sigs.iter().any(|sig| sig.signed && sig.status == SignatureStatus::Unknown) })
+    );
+}
+
+#[test]
+fn a_fresh_unsigned_document_keeps_signature_validation_deferred() {
+    let mut h = harness(dir());
+    let id = h.state().views[0].id;
+    h.run_steps(6);
+    let signatures_button = h.get_by_label("Signatures").rect();
+    assert!(!has_signature_indicator_dot(&h, signatures_button));
+    assert!(h.state().session.get(id).unwrap().validated_signatures().is_none());
+}
+
+#[test]
+fn malformed_signed_document_remains_visible_without_validation_details() {
+    let mut h = harness_with_bytes(dir(), malformed_signed_fixture());
+    let id = h.state().views[0].id;
+    let doc = h.state().session.get(id).unwrap();
+    assert!(doc.is_signed());
+
+    h.run_steps(6);
+    let signatures_button = h.get_by_label("Signatures").rect();
+    assert!(has_signature_indicator_dot(&h, signatures_button));
+    h.get_by_label("At least one signature has problems.");
+    assert!(h.state().session.get(id).unwrap().validated_signatures().is_some_and(|sigs| sigs.is_empty()));
+
+    h.get_by_label("Signatures").click();
+    h.run_steps(2);
+    assert!(
+        h.get_all_by_label("At least one signature has problems.").count() >= 2,
+        "the banner and panel both retain the malformed signature warning"
+    );
 }
 
 fn at(h: &Harness<'static, PdfCraftApp>, x: f32, y: f32) -> Pos2 {

@@ -2662,8 +2662,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // Opened without the owner password and something is restricted.
     let secured = doc.security_summary().is_some_and(|s| !(s.owner || (s.permissions.modify() && s.permissions.assemble())));
     let repaired = !doc.repair_log().is_empty();
-    let signatures = doc.validated_signatures().unwrap_or_default();
-    match notices(view, doc, secured, repaired, crate::sign_ui::banner(signatures), ui, &t) {
+    let has_signatures = doc.is_signed();
+    let signatures = if has_signatures { doc.signatures() } else { doc.validated_signatures().unwrap_or_default() };
+    match notices(view, doc, secured, repaired, crate::sign_ui::banner(signatures, has_signatures), ui, &t) {
         #[cfg(not(target_arch = "wasm32"))]
         Some(Notice::Reload) => app.watch.reload_request = Some(view.id),
         #[cfg(target_arch = "wasm32")]
@@ -3856,7 +3857,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
             // Validation is viewer chrome over the signer's original artwork, which
             // may still say "Signature Not Verified". These badges never enter document
             // streams, image/text exports, vector printing or Print as Image.
-            for badge in signature_badges(doc.signatures(), i) {
+            for badge in signature_badges(doc.validated_signatures().unwrap_or_default(), i) {
                 let [x0, y0, x1, y1] = badge.rect;
                 let sr = xf.user_rect(info, i, [x0 as f32, y0 as f32, x1 as f32, y1 as f32]);
                 let (icon, color) = crate::sign_ui::signature_status_style(badge.status);
