@@ -408,6 +408,7 @@ pub struct Document {
     /// Where `endstream` occurs in `data`; see [`EndstreamIndex`].
     endstreams: Arc<EndstreamIndex>,
     source_identity: Arc<()>,
+    initial_read_state: Option<ReadState>,
     entries: Arc<XrefIndex>,
     trailer: Dict,
     revisions: Arc<Vec<Revision>>,
@@ -546,6 +547,7 @@ impl Document {
             data: Arc::new(Vec::new()),
             endstreams: Arc::default(),
             source_identity: Arc::new(()),
+            initial_read_state: None,
             entries: Arc::new(XrefIndex::empty()),
             trailer: Dict::new(),
             revisions: Arc::new(Vec::new()),
@@ -629,6 +631,7 @@ impl Document {
             data,
             endstreams: Arc::default(),
             source_identity: Arc::new(()),
+            initial_read_state: None,
             entries: Arc::new(XrefIndex::empty()),
             trailer: Dict::new(),
             revisions: Arc::new(Vec::new()),
@@ -697,6 +700,7 @@ impl Document {
             Arc::make_mut(&mut doc.repair_log).push("exhausted trailer /Size; new objects use unused object numbers".into());
         }
         doc.next_num = max.saturating_add(1).max(size).max(1);
+        doc.initial_read_state = Some(doc.read_state());
         Ok(doc)
     }
 
@@ -891,6 +895,12 @@ impl Document {
     /// changes with every edit, so a value derived from the document can be cached against it.
     pub fn read_state(&self) -> ReadState {
         ReadState { source: self.source_identity(), trailer: self.trailer.clone(), overlay: self.overlay.clone() }
+    }
+
+    /// Whether this parsed document still reads as it did when opened. In-memory documents have
+    /// no original read state.
+    pub fn is_original_read_state(&self) -> bool {
+        self.initial_read_state.as_ref().is_some_and(|state| state.matches(self))
     }
 
     /// A bounded read-only inspection view over this parsed source.

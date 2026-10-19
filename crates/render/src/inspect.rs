@@ -552,10 +552,11 @@ pub fn inspect(bytes: Arc<Vec<u8>>, password: Option<&str>) -> Result<DocInfo, O
 
 /// Inspect bytes while reusing the COS parse for the same source opened by the editor.
 ///
-/// A source is reused only when it owns the same `Arc` as `bytes`; otherwise inspection falls
-/// back to the independent parser path. The inspection view has separate bounded caches.
+/// A source is reused only when it owns the same `Arc` as `bytes` and still reads as it did when
+/// opened; otherwise inspection falls back to the independent parser path. The inspection view
+/// has separate bounded caches.
 pub fn inspect_with_cos(bytes: Arc<Vec<u8>>, password: Option<&str>, source: &pdfcraft_cos::Document) -> Result<DocInfo, OpenError> {
-    let source = Arc::ptr_eq(source.bytes(), &bytes).then_some(source);
+    let source = (Arc::ptr_eq(source.bytes(), &bytes) && source.is_original_read_state()).then_some(source);
     inspect_inner(bytes, password, source)
 }
 
@@ -3181,6 +3182,36 @@ trailer << /Root 1 0 R >>
             a.pdf_version.clear();
             assert_eq!(format!("{a:?}"), format!("{c:?}"));
         }
+    }
+
+    #[test]
+    fn inspect_with_cos_rejects_sources_changed_since_open() {
+        let bytes = Arc::new(CUSTOM_INFO.to_vec());
+        let expected = inspect(bytes.clone(), None).unwrap();
+        let source = pdfcraft_cos::Document::open(bytes.clone()).unwrap();
+        assert!(source.is_original_read_state());
+
+        let info_ref = source.trailer().reference(b"Info").unwrap();
+        let mut info = source.get(info_ref).as_dict().cloned().unwrap();
+        info.set(b"Title".to_vec(), pdfcraft_cos::Object::String(pdfcraft_cos::PdfString::text("Unsaved title")));
+        let mut edited_object = source.clone();
+        edited_object.set(info_ref, pdfcraft_cos::Object::Dict(info));
+        assert!(!edited_object.is_original_read_state());
+        crate::structure::reset_source_path_counts();
+        let object_result = inspect_with_cos(bytes.clone(), None, &edited_object).unwrap();
+        assert_eq!(crate::structure::source_path_counts(), (1, 0));
+        assert_eq!(object_result.title, expected.title);
+
+        let mut edited_trailer = source.clone();
+        let mut inline_info = pdfcraft_cos::Dict::new();
+        inline_info.set(b"Title".to_vec(), pdfcraft_cos::Object::String(pdfcraft_cos::PdfString::text("Unsaved title")));
+        edited_trailer.trailer_mut().set(b"Info".to_vec(), pdfcraft_cos::Object::Dict(inline_info));
+        assert!(!edited_trailer.is_modified(), "direct trailer edits are not reflected by is_modified");
+        assert!(!edited_trailer.is_original_read_state());
+        crate::structure::reset_source_path_counts();
+        let trailer_result = inspect_with_cos(bytes, None, &edited_trailer).unwrap();
+        assert_eq!(crate::structure::source_path_counts(), (1, 0));
+        assert_eq!(trailer_result.title, expected.title);
     }
 
     #[test]
