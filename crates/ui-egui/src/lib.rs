@@ -459,6 +459,8 @@ struct PendingOpen {
 #[cfg(not(target_arch = "wasm32"))]
 struct OpeningNotice {
     token: u64,
+    /// The language `label` is in, so a language change while the open is pending re-translates it.
+    lang: i18n::Lang,
     label: String,
 }
 
@@ -1260,10 +1262,12 @@ impl PdfCraftApp {
             self.opening_notice = None;
             return;
         };
-        if self.opening_notice.as_ref().is_some_and(|notice| notice.token == pending.token) {
+        let lang = i18n::current();
+        if self.opening_notice.as_ref().is_some_and(|notice| notice.token == pending.token && notice.lang == lang) {
             return;
         }
-        self.opening_notice = Some(OpeningNotice { token: pending.token, label: i18n::fmt(tl!("Opening {name}…"), &[("name", &pending.name)]) });
+        self.opening_notice =
+            Some(OpeningNotice { token: pending.token, lang, label: i18n::fmt(tl!("Opening {name}…"), &[("name", &pending.name)]) });
     }
 
     #[cfg(not(target_arch = "wasm32"))]
