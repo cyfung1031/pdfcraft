@@ -2664,7 +2664,15 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let repaired = !doc.repair_log().is_empty();
     let has_signatures = doc.is_signed();
     let signatures = if has_signatures { doc.signatures() } else { doc.validated_signatures().unwrap_or_default() };
-    match notices(view, doc, secured, repaired, crate::sign_ui::banner(signatures, has_signatures), ui, &t) {
+    match notices(
+        view,
+        doc,
+        secured,
+        repaired,
+        crate::sign_ui::banner(signatures, has_signatures, has_signatures && doc.signatures_incomplete()),
+        ui,
+        &t,
+    ) {
         #[cfg(not(target_arch = "wasm32"))]
         Some(Notice::Reload) => app.watch.reload_request = Some(view.id),
         #[cfg(target_arch = "wasm32")]

@@ -414,6 +414,7 @@ pub struct Document {
     links: OnceLock<Vec<pdfcraft_annot::links::LinkItem>>,
     validated_signatures: OnceLock<Vec<SignatureInfo>>,
     signature_presence: OnceLock<bool>,
+    signatures_incomplete: OnceLock<bool>,
     trust: Arc<TrustStore>,
     sig_cache: Arc<pdfcraft_sign::DigestCache>,
     editor: Option<Editor>,
@@ -679,6 +680,13 @@ impl Document {
         self.validated_signatures.get_or_init(|| {
             self.editor.as_ref().map(|editor| signatures_of(&editor.cos, &self.bytes, &self.trust, &self.sig_cache)).unwrap_or_default()
         })
+    }
+
+    /// A signed field that [`Document::signatures`] leaves out: validation reads the AcroForm
+    /// field tree, so a signed field reachable only through page annotations is not in the
+    /// list, and the list alone cannot say that every signature is valid.
+    pub fn signatures_incomplete(&self) -> bool {
+        *self.signatures_incomplete.get_or_init(|| self.editor.as_ref().is_some_and(|editor| has_unlisted_signed_field(&editor.cos)))
     }
 
     /// Signature details if a caller has already requested validation.
@@ -3429,22 +3437,36 @@ fn signatures_of(cos: &pdfcraft_cos::Document, bytes: &[u8], trust: &TrustStore,
 }
 
 fn has_signed_signature_field(cos: &pdfcraft_cos::Document) -> bool {
-    pdfcraft_forms::fields_with_adopted(cos).items.into_iter().filter(|field| field.kind == pdfcraft_forms::FieldKind::Signature).any(|field| {
-        let mut current = Some(field.obj);
-        let mut seen = std::collections::HashSet::new();
-        while let Some(reference) = current {
-            if !seen.insert(reference) || seen.len() > 64 {
-                break;
-            }
-            let object = cos.get(reference);
-            let Some(dict) = object.as_dict() else { break };
-            if let Some(value) = dict.get(b"V") {
-                return cos.resolve(value).as_dict().is_some();
-            }
-            current = dict.reference(b"Parent");
+    pdfcraft_forms::fields_with_adopted(cos).items.iter().any(|field| is_signed_signature_field(cos, field))
+}
+
+/// A signed field among the page-only fields the forms crate adopts (listed after the field
+/// tree), which signature validation does not reach.
+fn has_unlisted_signed_field(cos: &pdfcraft_cos::Document) -> bool {
+    let fields = pdfcraft_forms::fields_with_adopted(cos);
+    let tree = fields.items.len().saturating_sub(fields.adopted_page_fields);
+    fields.items.iter().skip(tree).any(|field| is_signed_signature_field(cos, field))
+}
+
+/// A signature field whose `/V` (its own or inherited) is a signature dictionary.
+fn is_signed_signature_field(cos: &pdfcraft_cos::Document, field: &pdfcraft_forms::Field) -> bool {
+    if field.kind != pdfcraft_forms::FieldKind::Signature {
+        return false;
+    }
+    let mut current = Some(field.obj);
+    let mut seen = std::collections::HashSet::new();
+    while let Some(reference) = current {
+        if !seen.insert(reference) || seen.len() > 64 {
+            break;
         }
-        false
-    })
+        let object = cos.get(reference);
+        let Some(dict) = object.as_dict() else { break };
+        if let Some(value) = dict.get(b"V") {
+            return cos.resolve(value).as_dict().is_some();
+        }
+        current = dict.reference(b"Parent");
+    }
+    false
 }
 
 fn signed_state(cos: &pdfcraft_cos::Document, cache: &pdfcraft_sign::DigestCache) -> bool {
@@ -3453,6 +3475,7 @@ fn signed_state(cos: &pdfcraft_cos::Document, cache: &pdfcraft_sign::DigestCache
 
 fn invalidate_signature_state(doc: &mut Document) {
     doc.signature_presence.take();
+    doc.signatures_incomplete.take();
     doc.validated_signatures.take();
 }
 
@@ -3820,6 +3843,7 @@ impl Session {
             links: OnceLock::new(),
             validated_signatures: OnceLock::new(),
             signature_presence: OnceLock::new(),
+            signatures_incomplete: OnceLock::new(),
             trust: trust.clone(),
             sig_cache,
             editor,

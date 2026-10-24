@@ -3464,6 +3464,7 @@ fn signing_saving_trusting_and_commenting_afterwards() {
     let doc = s.get(id).unwrap();
     assert_eq!(doc.name, "signed.pdf");
     assert!(doc.is_signed() && !doc.dirty && doc.can_undo().is_none(), "signing can't be undone");
+    assert!(!doc.signatures_incomplete(), "a field-tree signature is in the validation output");
     assert!(doc.validated_signatures().is_none(), "signed presence does not perform validation");
     let sig = &doc.signatures()[0];
     let first = doc.validated_signatures().unwrap();
@@ -6028,6 +6029,9 @@ fn signed_state_covers_adopted_signature_fields_before_validation() {
     assert!(doc.is_signed(), "a malformed signature dictionary still blocks full rewrites");
     assert!(doc.validated_signatures().is_none());
     assert!(doc.signatures().is_empty(), "the adopted page-only field is outside current validation output");
+    assert!(doc.signatures_incomplete(), "so the signature list is known to be incomplete");
+    let (session, id) = open(make_pdf(true, None));
+    assert!(!session.get(id).unwrap().signatures_incomplete(), "an empty adopted field is not a missing signature");
 }
 
 #[test]
