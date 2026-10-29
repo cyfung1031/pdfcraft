@@ -95,10 +95,20 @@ impl Type0Font {
                 let mut fallback_query =
                     FallbackFontQuery::with_descriptor(dict, Some(font_descriptor.clone()));
                 fallback_query.character_collection = character_collection.clone();
-                let (query, is_standard) =
-                    if let Some((standard, _)) = select_standard_font(dict, &font_descriptor) {
-                        (FontQuery::Standard(standard), true)
-                    } else {
+                let (query, is_standard) = match select_standard_font(dict, &font_descriptor) {
+                    // PdfCraft patch (72): a CJK font whose name only hints at a standard family
+                    // (`MonotypeSung-Light` holds "mono") is asked for as a fallback carrying that
+                    // hint, so a face for its script can stand in; a resolver without one picks
+                    // the hinted font, as before.
+                    Some((standard, false))
+                        if is_adobe_cjk(character_collection.as_ref())
+                            && !names_standard_family(&fallback_query) =>
+                    {
+                        fallback_query.standard_hint = Some(standard);
+                        (FontQuery::Fallback(fallback_query.clone()), false)
+                    }
+                    Some((standard, _)) => (FontQuery::Standard(standard), true),
+                    None => {
                         warn!(
                             "unable to load CID font {} ({:?}), attempting fallback",
                             fallback_query
@@ -109,7 +119,8 @@ impl Type0Font {
                         );
 
                         (FontQuery::Fallback(fallback_query.clone()), false)
-                    };
+                    }
+                };
 
                 let (data, index) = font_resolver(&query)?;
                 let substitute = (data.clone(), index);
@@ -649,6 +660,29 @@ impl CidToGIdMap {
             }
         }
     }
+}
+
+/// PdfCraft patch (72): whether `collection` is one of Adobe's CJK character collections
+/// (Japan1, GB1, CNS1, Korea1, KR).
+fn is_adobe_cjk(collection: Option<&CharacterCollection>) -> bool {
+    collection.is_some_and(|c| {
+        c.family.ucs2_cmap().is_some()
+            || matches!(&c.family, CidFamily::Custom { registry, ordering }
+                if registry.as_slice() == b"Adobe" && ordering.as_slice() == b"KR")
+    })
+}
+
+/// PdfCraft patch (72): whether the font's name names a standard family outright although
+/// `select_standard_font` calls the match inexact: "Arial" is Helvetica and "Zapf"/"Dingbats"
+/// ZapfDingbats, as PdfCraft's substitution chain (`Std14::recognise` in
+/// `crates/fonts/src/std14.rs`) reads them too. Keep the two alike.
+fn names_standard_family(query: &FallbackFontQuery) -> bool {
+    query.post_script_name.as_deref().is_some_and(|name| {
+        let name = name.to_ascii_lowercase();
+        ["arial", "zapf", "dingbat"]
+            .iter()
+            .any(|family| name.contains(family))
+    })
 }
 
 /// PdfCraft patch: a further face's glyph ids carry the face's position above the 16 bits a
