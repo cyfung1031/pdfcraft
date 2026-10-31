@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use work_queue::{ResultReceiver, WorkQueue};
 
+use hayro::hayro_interpret::font::{FontData, FontQuery};
 use hayro::hayro_interpret::{InterpreterSettings, InterpreterWarning};
 use hayro::hayro_syntax::Pdf;
 use hayro::vello_cpu::color::AlphaColor;
@@ -77,23 +78,58 @@ pub struct RenderConfig {
     /// The page clears to transparent instead of white (or the reading background): for a page
     /// holding only what is laid over another raster, such as a comment while it is dragged.
     pub transparent: bool,
+    /// Draw a CID font of an Adobe CJK collection that the PDF does not embed with one face already
+    /// installed on this machine (see `system_font`). Off by default and on only for on-screen
+    /// viewer and preview rasters: exports, printing and OCR render without it, so nothing drawn with an
+    /// installed font is saved or printed (AGENTS.md §1.2, §1.4).
+    pub system_fonts: bool,
 }
 
 impl RenderConfig {
+    /// This configuration for a raster that is only shown on screen (the viewer, Combine
+    /// thumbnails, figure previews): installed CJK faces may draw fonts the PDF doesn't embed.
+    /// Never use it for anything that can be saved, printed, recognised or returned to an agent
+    /// (AGENTS.md §1.2, §1.4).
+    #[must_use]
+    pub fn on_screen(self) -> Self {
+        Self { system_fonts: true, ..self }
+    }
+
+    /// Build interpreter settings with layer and comment preferences and a font resolver that
+    /// tries the substitution chain's face for the font's script, then opt-in installed CJK faces,
+    /// then the chain's nearest-script face, then standard substitutes.
+    /// Passwords belong to parser construction; request-specific preview overrides are applied
+    /// by `render_page`, which also preserves the caller's warning and cancellation hooks.
     fn settings(&self) -> InterpreterSettings {
         let standard = InterpreterSettings::default().font_resolver;
+        let system_fonts = self.system_fonts;
         InterpreterSettings {
             ocg_overrides: self.layers.clone(),
             hide_comments: self.hide_comments,
             // A CID font the PDF doesn't embed is drawn with the substitution chain's stand-in
-            // (pdfcraft_fonts::fallback, the face doc_info reports): its exact family, else a Han
-            // face for an Adobe CJK collection. Every other font keeps hayro's standard
-            // substitute. Either way the characters it lacks draw in the next face that has them.
-            font_resolver: Arc::new(move |query| substitute::resolve(query).or_else(|| standard(query))),
+            // (pdfcraft_fonts::fallback, the face doc_info reports) when it is a face for the
+            // font's own script or exact family; else, on screen only, with an installed face
+            // (system_font); else with the chain's face for the nearest Han script. Every other
+            // font keeps hayro's standard substitute. Either way the characters it lacks draw in
+            // the next face that has them.
+            font_resolver: Arc::new(move |query| {
+                substitute::resolve_for_script(query)
+                    .or_else(|| system_fonts.then(|| system_fallback(query)).flatten())
+                    .or_else(|| substitute::resolve(query))
+                    .or_else(|| standard(query))
+            }),
             further_faces: Arc::new(substitute::further_faces),
             ..InterpreterSettings::default()
         }
     }
+}
+
+/// An installed face for a CID font of an Adobe CJK collection that the PDF doesn't embed and
+/// craft-fonts has no face for the script of (see `substitute::resolve_for_script`). `None` for
+/// every other font.
+fn system_fallback(query: &FontQuery) -> Option<(FontData, u32)> {
+    let FontQuery::Fallback(f) = query else { return None };
+    crate::system_font::fallback(f)
 }
 
 /// Hard cap on a rendered side, to bound memory at extreme zoom levels (tiling arrives in M3.3).
@@ -139,6 +175,7 @@ pub struct RenderRequest {
 /// The tag bit of a print-preview raster. Such requests always render the document's true
 /// colours, ignoring `RenderConfig::reading_colors`: a preview's job is fidelity to the
 /// printout, and the print itself — imposed from the document — is never recoloured.
+/// Installed-font fallback is also disabled, matching the output's font policy.
 pub const PRINT_TAG: u64 = 1 << 60;
 
 /// The reading colours a request renders with: print previews ([`PRINT_TAG`]) ignore the
@@ -276,6 +313,23 @@ fn render_page<'a>(
     config: &RenderConfig,
     req: RenderRequest,
 ) -> Result<Output, (String, bool)> {
+    // Print previews share the viewer pool, but must use the output font policy. Keep the
+    // caller's cancellation/warning hooks, layers and annotation settings. A fresh cache is
+    // essential: hayro keys cached fonts by PDF dictionary, not by the font resolver, so the
+    // viewer cache could supply an installed face even after changing the resolver (and a
+    // cached missing font from print preview could blank the viewer on switching back).
+    let print_settings;
+    let print_cache;
+    let (settings, cache) = if config.system_fonts && req.tag & PRINT_TAG != 0 {
+        print_settings = InterpreterSettings {
+            font_resolver: RenderConfig { system_fonts: false, ..config.clone() }.settings().font_resolver,
+            ..settings.clone()
+        };
+        print_cache = RenderCache::new();
+        (&print_settings, &print_cache)
+    } else {
+        (settings, cache)
+    };
     let reading = request_reading(config, &req);
     if req.kind == RequestKind::Text {
         return match catch_unwind(AssertUnwindSafe(|| crate::text::extract_page(pdf, req.page, settings))) {
